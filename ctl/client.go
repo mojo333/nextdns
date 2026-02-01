@@ -19,7 +19,7 @@ func Dial(addr string) (*Client, error) {
 	}
 	cl := &Client{
 		c:       c,
-		replies: make(chan Event),
+		replies: make(chan Event, 10),
 	}
 	go cl.readLoop()
 	return cl, nil

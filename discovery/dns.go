@@ -258,15 +258,25 @@ func sendQuery(dns string, buf []byte, typ dnsmessage.Type) (rrs []string, err e
 	}
 	id := uint16(buf[0])<<8 | uint16(buf[1])
 	var n int
+	const maxRetries = 5
+	retries := 0
 	for {
 		if n, err = c.Read(buf[:514]); err != nil {
 			return nil, err
 		}
 		if n < 2 {
+			retries++
+			if retries >= maxRetries {
+				return nil, fmt.Errorf("max retries exceeded waiting for valid response")
+			}
 			continue
 		}
 		if id != uint16(buf[0])<<8|uint16(buf[1]) {
 			// Skip mismatch id as it may come from previous timeout query.
+			retries++
+			if retries >= maxRetries {
+				return nil, fmt.Errorf("max retries exceeded: DNS ID mismatch")
+			}
 			continue
 		}
 		break

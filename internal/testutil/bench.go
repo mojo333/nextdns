@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -109,20 +110,20 @@ func BenchmarkTieredPool(b *testing.B, pool *TieredBufferPool) {
 
 // AllocationTracker tracks memory allocations during a test.
 type AllocationTracker struct {
-	before testing.MemStats
-	after  testing.MemStats
+	before runtime.MemStats
+	after  runtime.MemStats
 }
 
 // NewAllocationTracker creates a new allocation tracker.
 func NewAllocationTracker() *AllocationTracker {
 	at := &AllocationTracker{}
-	testing.ReadMemStats(&at.before)
+	runtime.ReadMemStats(&at.before)
 	return at
 }
 
 // Stop stops tracking and returns allocation stats.
 func (at *AllocationTracker) Stop() (allocs uint64, bytes uint64) {
-	testing.ReadMemStats(&at.after)
+	runtime.ReadMemStats(&at.after)
 	return at.after.Mallocs - at.before.Mallocs,
 		at.after.TotalAlloc - at.before.TotalAlloc
 }

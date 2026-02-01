@@ -88,7 +88,6 @@ func isErrNetUnreachable(err error) bool {
 
 func (p *proxySvc) start() (err error) {
 	errC := make(chan error)
-	var ctx context.Context
 	go func() {
 		ctx, stopFunc := context.WithCancel(context.Background())
 		p.stopMu.Lock()

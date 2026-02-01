@@ -3,7 +3,7 @@
 # NextDNS Cross-Compilation Script
 # Builds stripped binaries for amd64, arm64, and armv7
 
-VERSION="${VERSION:-1.44.0}"
+VERSION="${VERSION:-2.0.0}"
 DIST_DIR="dist"
 
 echo "════════════════════════════════════════════════════"
@@ -60,18 +60,6 @@ echo ""
 build_binary "linux" "amd64" "" "amd64"
 build_binary "linux" "arm64" "" "arm64"
 build_binary "linux" "arm" "7" "armv7"
-
-# Build for macOS
-echo "Building macOS binaries..."
-echo ""
-build_binary "darwin" "amd64" "" "amd64"
-build_binary "darwin" "arm64" "" "arm64"
-
-# Build for FreeBSD
-echo "Building FreeBSD binaries..."
-echo ""
-build_binary "freebsd" "amd64" "" "amd64"
-build_binary "freebsd" "arm64" "" "arm64"
 
 # Generate checksums
 echo "Generating checksums..."

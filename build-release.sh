@@ -6,7 +6,7 @@
 # Don't exit on error for individual builds
 set +e
 
-VERSION="${VERSION:-1.44.0}"
+VERSION="${VERSION:-2.0.0}"
 BUILD_DIR="build"
 DIST_DIR="dist"
 
@@ -33,22 +33,10 @@ LDFLAGS="-s -w -X main.version=$VERSION"
 # Platform definitions: OS/ARCH
 PLATFORMS=(
     "linux/amd64"
-    "linux/386"
     "linux/arm64"
     "linux/arm/7"
-    "linux/arm/6"
-    "linux/arm/5"
-    "linux/mipsle"
-    "linux/mips"
-    "darwin/amd64"
-    "darwin/arm64"
     "freebsd/amd64"
     "freebsd/arm64"
-    "freebsd/386"
-    "netbsd/amd64"
-    "netbsd/arm64"
-    "openbsd/amd64"
-    "openbsd/arm64"
 )
 
 total=${#PLATFORMS[@]}
@@ -56,18 +44,19 @@ current=0
 
 build_platform() {
     local platform=$1
-    local goos=${platform%/*}
-    local goarch_full=${platform#*/}
-    local goarch=${goarch_full%/*}
-    local goarm=${goarch_full#*/}
+    local goos=${platform%%/*}
+    local rest=${platform#*/}
+    local goarch goarm arch_name
 
     # Handle ARM variants
-    if [[ "$goarch_full" == *"/"* ]]; then
-        goarch="arm"
+    if [[ "$rest" == *"/"* ]]; then
+        goarch=${rest%%/*}
+        goarm=${rest#*/}
         export GOARM=$goarm
         arch_name="armv${goarm}"
     else
-        goarm=""
+        goarch="$rest"
+        unset GOARM
         arch_name="$goarch"
     fi
 

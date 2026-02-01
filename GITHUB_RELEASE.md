@@ -1,10 +1,10 @@
-# Create GitHub Release for v1.44.0
+# Create GitHub Release for v2.0.0
 
 ## Quick Start
 
 ```bash
 # Push the tag (if you haven't already)
-git push origin v1.44.0
+git push origin v2.0.0
 
 # Then follow the steps below
 ```
@@ -15,7 +15,7 @@ git push origin v1.44.0
 
 ```bash
 cd /home/mojo_333/nextdns
-git push origin v1.44.0
+git push origin v2.0.0
 ```
 
 ### 2. Create Release on GitHub
@@ -26,16 +26,16 @@ Replace YOUR_USERNAME with your actual GitHub username.
 
 ### 3. Fill in Release Form
 
-**Tag:** v1.44.0 (select from dropdown)
+**Tag:** v2.0.0 (select from dropdown)
 
 **Release title:**
 ```
-v1.44.0 - Bug Fixes & Performance Optimizations
+v2.0.0 - Bug Fixes & Performance Optimizations
 ```
 
 **Description:** (copy/paste this)
 ```
-# NextDNS v1.44.0 - Bug Fixes & Performance Optimizations
+# NextDNS v2.0.0 - Bug Fixes & Performance Optimizations
 
 Production-ready release with 9 critical bug fixes and major performance improvements.
 
@@ -68,11 +68,11 @@ Production-ready release with 9 critical bug fixes and major performance improve
 
 ### Linux AMD64 (most common):
 ```bash
-wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v1.44.0/nextdns_1.44.0_linux_amd64.tar.gz
-wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v1.44.0/SHA256SUMS
+wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v2.0.0/nextdns_2.0.0_linux_amd64.tar.gz
+wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v2.0.0/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
-tar xzf nextdns_1.44.0_linux_amd64.tar.gz
-sudo mv nextdns_1.44.0_linux_amd64 /usr/local/bin/nextdns
+tar xzf nextdns_2.0.0_linux_amd64.tar.gz
+sudo mv nextdns /usr/local/bin/nextdns
 sudo nextdns install -config-id=YOUR_CONFIG_ID
 ```
 
@@ -120,11 +120,11 @@ Fully backward compatible. No breaking changes.
 
 Drag and drop these files from `/home/mojo_333/nextdns/dist/`:
 
-- [ ] nextdns_1.44.0_linux_amd64.tar.gz
-- [ ] nextdns_1.44.0_linux_arm64.tar.gz
-- [ ] nextdns_1.44.0_linux_armv7.tar.gz
-- [ ] nextdns_1.44.0_freebsd_amd64.tar.gz
-- [ ] nextdns_1.44.0_freebsd_arm64.tar.gz
+- [ ] nextdns_2.0.0_linux_amd64.tar.gz (3.3M)
+- [ ] nextdns_2.0.0_linux_arm64.tar.gz (3.0M)
+- [ ] nextdns_2.0.0_linux_armv7.tar.gz (3.2M)
+- [ ] nextdns_2.0.0_freebsd_amd64.tar.gz (3.3M)
+- [ ] nextdns_2.0.0_freebsd_arm64.tar.gz (3.0M)
 - [ ] SHA256SUMS
 
 ### 5. Publish
@@ -136,10 +136,10 @@ Drag and drop these files from `/home/mojo_333/nextdns/dist/`:
 
 ```bash
 # Test download link
-wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v1.44.0/nextdns_1.44.0_linux_amd64.tar.gz
+wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v2.0.0/nextdns_2.0.0_linux_amd64.tar.gz
 
 # Verify checksum
-wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v1.44.0/SHA256SUMS
+wget https://github.com/YOUR_USERNAME/nextdns/releases/download/v2.0.0/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 # Should output: OK
 ```
@@ -148,7 +148,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 After publishing, share the release URL:
 ```
-https://github.com/YOUR_USERNAME/nextdns/releases/tag/v1.44.0
+https://github.com/YOUR_USERNAME/nextdns/releases/tag/v2.0.0
 ```
 
 ---

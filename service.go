@@ -91,6 +91,6 @@ func svc(args []string) error {
 		fmt.Printf("%s", l)
 		return err
 	default:
-		panic("unknown cmd: " + cmd)
+		return fmt.Errorf("unknown command: %s", cmd)
 	}
 }

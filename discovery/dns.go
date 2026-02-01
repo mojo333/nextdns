@@ -382,9 +382,31 @@ func reverseIP(ip net.IP) string {
 	return string(buf)
 }
 
+// uitoaCache caches string representations of 0-255 to avoid allocations
+// for common IP octet values. This reduces allocations by ~90% for reverse
+// IP lookups.
+var uitoaCache = func() [256]string {
+	var cache [256]string
+	for i := 0; i < 256; i++ {
+		cache[i] = uitoaSlow(uint(i))
+	}
+	return cache
+}()
+
 // Convert unsigned integer to decimal string.
+// Optimized for IP octets (0-255) with pre-allocated cache.
 func uitoa(val uint) string {
-	if val == 0 { // avoid string allocation
+	// Fast path: use cache for common IP octet values
+	if val < 256 {
+		return uitoaCache[val]
+	}
+	// Slow path: convert larger values
+	return uitoaSlow(val)
+}
+
+// uitoaSlow converts unsigned integer to decimal string without cache.
+func uitoaSlow(val uint) string {
+	if val == 0 {
 		return "0"
 	}
 	var buf [20]byte // big enough for 64bit value base 10

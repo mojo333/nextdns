@@ -137,8 +137,7 @@ func (m *Manager) findBestEndpointLocked(ctx context.Context) (*activeEnpoint, e
 				firstEndpoint = e
 			}
 			ae := m.newActiveEndpointLocked(e)
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
+			testCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			var tester func(ctx context.Context, testDomain string) error
 			if m.EndpointTester != nil {
 				if t := m.EndpointTester(e); t != nil {
@@ -148,7 +147,8 @@ func (m *Manager) findBestEndpointLocked(ctx context.Context) (*activeEnpoint, e
 			if tester == nil {
 				tester = endpointTester(e)
 			}
-			if err = tester(ctx, TestDomain); err != nil {
+			if err = tester(testCtx, TestDomain); err != nil {
+				cancel()
 				m.debugf("Endpoint err %s", err)
 				if isErrNetUnreachable(err) {
 					// Do not report network unreachable errors, bubble them up.
@@ -159,6 +159,7 @@ func (m *Manager) findBestEndpointLocked(ctx context.Context) (*activeEnpoint, e
 				}
 				continue
 			}
+			cancel()
 			m.debugf("Endpoint selected %s", e)
 			return ae, nil
 		}

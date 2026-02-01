@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +39,7 @@ type proxySvc struct {
 	log      host.Logger
 	resolver *resolver.DNS
 	stopFunc func()
+	stopMu   sync.Mutex
 	stopped  chan struct{}
 
 	// OnInit is called every time the proxy is started or restarted. The ctx is
@@ -88,8 +90,11 @@ func (p *proxySvc) start() (err error) {
 	errC := make(chan error)
 	var ctx context.Context
 	go func() {
-		ctx, p.stopFunc = context.WithCancel(context.Background())
-		defer p.stopFunc()
+		ctx, stopFunc := context.WithCancel(context.Background())
+		p.stopMu.Lock()
+		p.stopFunc = stopFunc
+		p.stopMu.Unlock()
+		defer stopFunc()
 		p.stopped = make(chan struct{})
 		defer close(p.stopped)
 		for _, f := range p.OnInit {
@@ -128,11 +133,15 @@ func (p *proxySvc) Stop() error {
 }
 
 func (p *proxySvc) stop() bool {
-	if p.stopFunc == nil {
+	p.stopMu.Lock()
+	stopFunc := p.stopFunc
+	if stopFunc == nil {
+		p.stopMu.Unlock()
 		return false
 	}
-	p.stopFunc()
 	p.stopFunc = nil
+	p.stopMu.Unlock()
+	stopFunc()
 	<-p.stopped
 	return true
 }

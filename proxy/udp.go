@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"runtime"
-	"sync"
 	"time"
 
 	"golang.org/x/net/ipv4"
@@ -39,16 +38,11 @@ var udpOOBSize = func() int {
 }()
 
 func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error {
-	bpool := sync.Pool{
-		New: func() interface{} {
-			// Use the same buffer size as for TCP and truncate later. UDP and
-			// TCP share the cache, and we want to avoid storing truncated
-			// response for UDP that would be reused when the client falls back
-			// to TCP.
-			b := make([]byte, maxTCPSize)
-			return &b
-		},
-	}
+	// Use the same buffer size as for TCP and truncate later. UDP and
+	// TCP share the cache, and we want to avoid storing truncated
+	// response for UDP that would be reused when the client falls back
+	// to TCP.
+	bpool := NewTieredBufferPool()
 
 	c, ok := l.(*net.UDPConn)
 	if !ok {
@@ -60,7 +54,7 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 
 	for {
 		inflightRequests <- struct{}{}
-		buf := *bpool.Get().(*[]byte)
+		buf := *bpool.GetLarge() // Use large buffer for UDP (caching compatibility)
 		qsize, lip, raddr, err := readUDP(c, buf)
 		if err != nil {
 			<-inflightRequests
@@ -84,7 +78,7 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 			if err != nil {
 				p.logErr(err)
 			}
-			rbuf := *bpool.Get().(*[]byte)
+			rbuf := *bpool.GetLarge()
 			defer func() {
 				if r := recover(); r != nil {
 					stackBuf := make([]byte, 64<<10)

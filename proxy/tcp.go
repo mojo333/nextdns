@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"runtime"
-	"sync"
 	"time"
 
 	"github.com/nextdns/nextdns/internal/dnsmessage"
@@ -19,12 +18,7 @@ import (
 const maxTCPSize = 65535
 
 func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
-	bpool := &sync.Pool{
-		New: func() interface{} {
-			b := make([]byte, maxTCPSize)
-			return &b
-		},
-	}
+	bpool := NewTieredBufferPool()
 
 	for {
 		c, err := l.Accept()
@@ -44,12 +38,12 @@ func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
 	}
 }
 
-func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *sync.Pool) error {
+func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *TieredBufferPool) error {
 	defer c.Close()
 
 	for {
 		inflightRequests <- struct{}{}
-		buf := *bpool.Get().(*[]byte)
+		buf := *bpool.GetLarge() // Always use large buffer for TCP
 		qsize, err := readTCP(c, buf)
 		if err != nil {
 			<-inflightRequests
@@ -73,7 +67,7 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *s
 			if err != nil {
 				p.logErr(err)
 			}
-			rbuf := *bpool.Get().(*[]byte)
+			rbuf := *bpool.GetLarge()
 			defer func() {
 				if r := recover(); r != nil {
 					stackBuf := make([]byte, 64<<10)

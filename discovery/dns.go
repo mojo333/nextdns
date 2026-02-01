@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net"
 	"sync"
 	"time"

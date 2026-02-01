@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/nextdns/nextdns/internal/dnsmessage"
@@ -39,7 +40,12 @@ func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
 }
 
 func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *TieredBufferPool) error {
-	defer c.Close()
+	var wg sync.WaitGroup
+	defer func() {
+		// Wait for all query processing goroutines to complete before closing
+		wg.Wait()
+		c.Close()
+	}()
 
 	for {
 		inflightRequests <- struct{}{}
@@ -57,7 +63,9 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 			return fmt.Errorf("query too small: %d", qsize)
 		}
 		start := time.Now()
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			var err error
 			var rsize int
 			var ri resolver.ResolveInfo

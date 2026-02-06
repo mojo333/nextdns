@@ -256,23 +256,24 @@ func TestServer_Broadcast(t *testing.T) {
 	}
 	defer s.Stop()
 
-	// Create multiple clients
+	// Create multiple raw connections (not Dial, to avoid readLoop competing
+	// with the test's own reader goroutine on the same connection)
 	const numClients = 5
-	clients := make([]*Client, numClients)
+	conns := make([]net.Conn, numClients)
 	receivers := make([]chan Event, numClients)
 
 	for i := 0; i < numClients; i++ {
-		c, err := Dial(s.Addr)
+		c, err := dial(s.Addr)
 		if err != nil {
-			t.Fatalf("Dial failed: %v", err)
+			t.Fatalf("dial failed: %v", err)
 		}
 		defer c.Close()
-		clients[i] = c
+		conns[i] = c
 		receivers[i] = make(chan Event, 10)
 
 		// Start goroutine to receive broadcasts
-		go func(idx int, cl *Client) {
-			dec := json.NewDecoder(cl.c)
+		go func(idx int, conn net.Conn) {
+			dec := json.NewDecoder(conn)
 			for {
 				var e Event
 				if err := dec.Decode(&e); err != nil {

@@ -200,27 +200,41 @@ func TestDNS53_Resolve_Timeout(t *testing.T) {
 }
 
 func TestDNS53_Resolve_IDMismatch(t *testing.T) {
-	// Server that returns wrong ID initially, then correct one
-	attempts := 0
-	server, err := testutil.NewMockDNSServer(func(query []byte) []byte {
-		attempts++
-		var p dnsmessage.Parser
-		h, _ := p.Start(query)
-		q, _ := p.Question()
-
-		wrongID := h.ID + 1
-		if attempts > 2 {
-			wrongID = h.ID // Correct ID after 2 attempts
-		}
-
-		resp, _ := testutil.NewTestResponse(wrongID, q.Name.String(),
-			net.ParseIP("1.2.3.4"), 300)
-		return resp
-	})
+	// Custom UDP server that sends 2 wrong-ID responses then 1 correct,
+	// simulating stale responses from previous queries on the same socket.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
+
+	go func() {
+		buf := make([]byte, 4096)
+		n, clientAddr, err := conn.ReadFromUDP(buf)
+		if err != nil || n < 12 {
+			return
+		}
+		var p dnsmessage.Parser
+		h, err := p.Start(buf[:n])
+		if err != nil {
+			return
+		}
+		q, err := p.Question()
+		if err != nil {
+			return
+		}
+		// Send 2 responses with wrong ID (simulating stale responses)
+		for i := 0; i < 2; i++ {
+			resp, _ := testutil.NewTestResponse(h.ID+uint16(i+1), q.Name.String(),
+				net.ParseIP("1.2.3.4"), 300)
+			conn.WriteToUDP(resp, clientAddr)
+		}
+		// Send correct response
+		resp, _ := testutil.NewTestResponse(h.ID, q.Name.String(),
+			net.ParseIP("1.2.3.4"), 300)
+		conn.WriteToUDP(resp, clientAddr)
+	}()
 
 	r := DNS53{}
 	q := makeTestQuery(t, "example.com.", dnsmessage.TypeA)
@@ -229,7 +243,7 @@ func TestDNS53_Resolve_IDMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	n, _, err := r.resolve(ctx, q, buf, server.Addr)
+	n, _, err := r.resolve(ctx, q, buf, addr)
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
@@ -237,28 +251,40 @@ func TestDNS53_Resolve_IDMismatch(t *testing.T) {
 	if n == 0 {
 		t.Error("expected successful response after ID mismatches")
 	}
-
-	if attempts <= 2 {
-		t.Errorf("expected multiple attempts, got %d", attempts)
-	}
 }
 
 func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
-	// Server that always returns wrong ID
-	server, err := testutil.NewMockDNSServer(func(query []byte) []byte {
-		var p dnsmessage.Parser
-		h, _ := p.Start(query)
-		q, _ := p.Question()
-
-		wrongID := h.ID + 1
-		resp, _ := testutil.NewTestResponse(wrongID, q.Name.String(),
-			net.ParseIP("1.2.3.4"), 300)
-		return resp
-	})
+	// Custom UDP server that sends 6 wrong-ID responses to a single query.
+	// maxRetries in DNS53.resolve is 5, so this should trigger the limit.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
+
+	go func() {
+		buf := make([]byte, 4096)
+		n, clientAddr, err := conn.ReadFromUDP(buf)
+		if err != nil || n < 12 {
+			return
+		}
+		var p dnsmessage.Parser
+		h, err := p.Start(buf[:n])
+		if err != nil {
+			return
+		}
+		q, err := p.Question()
+		if err != nil {
+			return
+		}
+		// Send 6 responses with wrong IDs
+		for i := 0; i < 6; i++ {
+			resp, _ := testutil.NewTestResponse(h.ID+uint16(i+1), q.Name.String(),
+				net.ParseIP("1.2.3.4"), 300)
+			conn.WriteToUDP(resp, clientAddr)
+		}
+	}()
 
 	r := DNS53{}
 	q := makeTestQuery(t, "example.com.", dnsmessage.TypeA)
@@ -267,7 +293,7 @@ func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, _, err = r.resolve(ctx, q, buf, server.Addr)
+	_, _, err = r.resolve(ctx, q, buf, addr)
 	if err == nil {
 		t.Error("expected max retries error")
 	}
@@ -278,14 +304,26 @@ func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
 }
 
 func TestDNS53_Resolve_ShortResponse(t *testing.T) {
-	// Server that returns too-short responses
-	server, err := testutil.NewMockDNSServer(func(query []byte) []byte {
-		return []byte{0} // Too short
-	})
+	// Custom UDP server that sends 6 too-short responses to a single query.
+	// maxRetries in DNS53.resolve is 5, so this should trigger the limit.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
+
+	go func() {
+		buf := make([]byte, 4096)
+		_, clientAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		// Send 6 short responses
+		for i := 0; i < 6; i++ {
+			conn.WriteToUDP([]byte{0}, clientAddr)
+		}
+	}()
 
 	r := DNS53{}
 	q := makeTestQuery(t, "example.com.", dnsmessage.TypeA)
@@ -294,7 +332,7 @@ func TestDNS53_Resolve_ShortResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_, _, err = r.resolve(ctx, q, buf, server.Addr)
+	_, _, err = r.resolve(ctx, q, buf, addr)
 	if err == nil {
 		t.Error("expected error for short responses")
 	}

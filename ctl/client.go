@@ -27,7 +27,10 @@ func Dial(addr string) (*Client, error) {
 
 func (c *Client) readLoop() {
 	dec := json.NewDecoder(c.c)
-	defer c.c.Close()
+	defer func() {
+		c.c.Close()
+		close(c.replies)
+	}()
 	for {
 		var e Event
 		err := dec.Decode(&e)
@@ -51,7 +54,10 @@ func (c *Client) Send(e Event) (interface{}, error) {
 		return nil, err
 	}
 	for {
-		re := <-c.replies
+		re, ok := <-c.replies
+		if !ok {
+			return nil, net.ErrClosed
+		}
 		if re.Name == e.Name {
 			return re.Data, nil
 		}

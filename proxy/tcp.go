@@ -52,6 +52,7 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 		buf := *bpool.GetLarge() // Always use large buffer for TCP
 		qsize, err := readTCP(c, buf)
 		if err != nil {
+			bpool.Put(&buf)
 			<-inflightRequests
 			if err == io.EOF {
 				return nil
@@ -59,6 +60,7 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 			return fmt.Errorf("TCP read: %v", err)
 		}
 		if qsize <= 14 {
+			bpool.Put(&buf)
 			<-inflightRequests
 			return fmt.Errorf("query too small: %d", qsize)
 		}

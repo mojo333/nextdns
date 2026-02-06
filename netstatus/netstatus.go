@@ -32,7 +32,9 @@ func Notify(c chan<- Change) {
 	handlers.Lock()
 	defer handlers.Unlock()
 	if handlers.c == nil {
-		go startChecker()
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		go startChecker(ctx)
 	}
 	handlers.c = append(handlers.c, c)
 }
@@ -44,7 +46,7 @@ func Stop(c chan<- Change) {
 	var newC = make([]chan<- Change, 0, len(handlers.c)-1)
 	for _, ch := range handlers.c {
 		if ch != c {
-			newC = append(newC, c)
+			newC = append(newC, ch)
 		}
 	}
 	handlers.c = newC
@@ -62,12 +64,9 @@ func broadcast(c Change) {
 	}
 }
 
-func startChecker() {
+func startChecker(ctx context.Context) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
-	var ctx context.Context
-	ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
 	_, _ = changed() // init
 	for {
 		select {

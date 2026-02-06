@@ -152,22 +152,14 @@ func (r *DOH) updateLastMod(url, lastMod string) {
 	if err != nil {
 		return
 	}
-	r.mu.RLock()
-	curLastModTime := r.lastModified[url]
-	if !lastModTime.After(curLastModTime) {
-		r.mu.RUnlock()
-		return
-	}
-	r.mu.RUnlock()
 	r.mu.Lock()
-	curLastModTime = r.lastModified[url]
-	if lastModTime.After(curLastModTime) {
+	defer r.mu.Unlock()
+	if lastModTime.After(r.lastModified[url]) {
 		if r.lastModified == nil {
 			r.lastModified = map[string]time.Time{}
 		}
 		r.lastModified[url] = lastModTime
 	}
-	r.mu.Unlock()
 }
 
 func readDNSResponse(r io.Reader, buf []byte) (n int, truncated bool, err error) {

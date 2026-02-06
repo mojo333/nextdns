@@ -44,7 +44,7 @@ func (e *DNSEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 	if err != nil {
 		return 0, fmt.Errorf("write: %v", err)
 	}
-	id := uint16(payload[0])<<8 | uint16(buf[1])
+	id := uint16(payload[0])<<8 | uint16(payload[1])
 	for {
 		if n, err = c.Read(buf[:514]); err != nil {
 			return n, fmt.Errorf("read: %v", err)

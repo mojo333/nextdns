@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -79,6 +80,9 @@ func (s *Server) run(l net.Listener) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			s.logErr(err)
 			continue
 		}

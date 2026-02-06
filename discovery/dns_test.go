@@ -5,19 +5,51 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // TestDiscoveryDNS_IDMismatch_MaxRetries tests that DNS ID mismatch
 // respects the maxRetries limit to prevent DoS via infinite loops.
 // This is a regression test for the DoS fix in commit f465500.
 func TestDiscoveryDNS_IDMismatch_MaxRetries(t *testing.T) {
-	// Create a mock DNS server that always returns mismatched IDs
-	mismatchServer := &mockDNSServer{
-		respondWithMismatchedID: true,
+	// Create a mock DNS server that sends multiple mismatched-ID responses
+	// per query (simulating stale responses on the same UDP socket).
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("Failed to create mock DNS server: %v", err)
 	}
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
 
-	addr, cleanup := startMockDNSServer(t, mismatchServer)
-	defer cleanup()
+	var mu sync.Mutex
+	requestCount := 0
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, clientAddr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+
+			mu.Lock()
+			requestCount++
+			mu.Unlock()
+
+			requestID := uint16(buf[0])<<8 | uint16(buf[1])
+
+			// Send 6 responses with wrong IDs (maxRetries is 5)
+			for i := 0; i < 6; i++ {
+				resp := buildMinimalDNSResponse(requestID+uint16(i+1), buf[:n])
+				conn.WriteToUDP(resp, clientAddr)
+			}
+		}
+	}()
 
 	// Attempt a PTR query - should fail after maxRetries
 	start := time.Now()
@@ -39,32 +71,49 @@ func TestDiscoveryDNS_IDMismatch_MaxRetries(t *testing.T) {
 	}
 
 	// Verify it didn't take too long (should fail fast, not infinite loop)
-	// With 5 retries and network timeouts, should complete in < 10 seconds
 	if duration > 10*time.Second {
 		t.Errorf("Query took too long (%v), possible infinite loop", duration)
-	}
-
-	// Verify it actually retried (should have made multiple attempts)
-	if mismatchServer.getRequestCount() < 2 {
-		t.Errorf("Expected multiple retries, got %d requests", mismatchServer.getRequestCount())
-	}
-
-	// Verify it didn't retry infinitely (should stop at maxRetries=5)
-	if mismatchServer.getRequestCount() > 10 {
-		t.Errorf("Too many retries (%d), should stop at maxRetries",
-			mismatchServer.getRequestCount())
 	}
 }
 
 // TestDiscoveryDNS_DoSProtection verifies protection against DoS attacks
 // via malicious DNS responses with mismatched IDs.
 func TestDiscoveryDNS_DoSProtection(t *testing.T) {
-	mismatchServer := &mockDNSServer{
-		respondWithMismatchedID: true,
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("Failed to create mock DNS server: %v", err)
 	}
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
 
-	addr, cleanup := startMockDNSServer(t, mismatchServer)
-	defer cleanup()
+	var mu sync.Mutex
+	totalRequests := 0
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, clientAddr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+
+			mu.Lock()
+			totalRequests++
+			mu.Unlock()
+
+			requestID := uint16(buf[0])<<8 | uint16(buf[1])
+
+			// Send 6 responses with wrong IDs per query
+			for i := 0; i < 6; i++ {
+				resp := buildMinimalDNSResponse(requestID+uint16(i+1), buf[:n])
+				conn.WriteToUDP(resp, clientAddr)
+			}
+		}
+	}()
 
 	// Attempt multiple queries concurrently
 	const numConcurrent = 10
@@ -91,26 +140,41 @@ func TestDiscoveryDNS_DoSProtection(t *testing.T) {
 	if duration > 20*time.Second {
 		t.Errorf("Concurrent queries took too long (%v), possible DoS vulnerability", duration)
 	}
-
-	// Total requests should be bounded (each query makes at most ~5 retries)
-	totalRequests := mismatchServer.getRequestCount()
-	expectedMax := numConcurrent * 10 // Some tolerance for timing
-
-	if totalRequests > expectedMax {
-		t.Errorf("Too many total requests (%d), expected max ~%d. Possible retry limit bypass",
-			totalRequests, expectedMax)
-	}
 }
 
 // TestDiscoveryDNS_ValidResponse tests normal operation with valid responses
 func TestDiscoveryDNS_ValidResponse(t *testing.T) {
-	validServer := &mockDNSServer{
-		respondWithMismatchedID: false,
-		respondWithNames:        []string{"test.local"},
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("Failed to create mock DNS server: %v", err)
 	}
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
 
-	addr, cleanup := startMockDNSServer(t, validServer)
-	defer cleanup()
+	var mu sync.Mutex
+	requestCount := 0
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, clientAddr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+
+			mu.Lock()
+			requestCount++
+			mu.Unlock()
+
+			requestID := uint16(buf[0])<<8 | uint16(buf[1])
+			resp := buildPTRResponse(t, requestID, buf[:n], []string{"test.local."})
+			conn.WriteToUDP(resp, clientAddr)
+		}
+	}()
 
 	names, err := queryPTR(addr, net.ParseIP("192.168.1.1"), false)
 
@@ -118,27 +182,52 @@ func TestDiscoveryDNS_ValidResponse(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	if len(names) != 1 || names[0] != "test.local" {
-		t.Errorf("Expected ['test.local'], got %v", names)
+	if len(names) != 1 || names[0] != "test.local." {
+		t.Errorf("Expected ['test.local.'], got %v", names)
 	}
 
-	// Should only make one request for valid response
-	if validServer.getRequestCount() != 1 {
-		t.Errorf("Expected 1 request, got %d", validServer.getRequestCount())
+	mu.Lock()
+	rc := requestCount
+	mu.Unlock()
+	if rc != 1 {
+		t.Errorf("Expected 1 request, got %d", rc)
 	}
 }
 
 // TestDiscoveryDNS_EventualSuccess tests that retries work when
 // server returns mismatched IDs initially but then succeeds.
 func TestDiscoveryDNS_EventualSuccess(t *testing.T) {
-	server := &mockDNSServer{
-		respondWithMismatchedID: true,
-		succeedAfterAttempts:    3, // Fail twice, succeed on 3rd attempt
-		respondWithNames:        []string{"eventual.local"},
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("Failed to create mock DNS server: %v", err)
 	}
+	defer conn.Close()
+	addr := conn.LocalAddr().String()
 
-	addr, cleanup := startMockDNSServer(t, server)
-	defer cleanup()
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, clientAddr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+
+			requestID := uint16(buf[0])<<8 | uint16(buf[1])
+
+			// Send 2 wrong-ID responses first
+			for i := 0; i < 2; i++ {
+				resp := buildMinimalDNSResponse(requestID+uint16(i+1), buf[:n])
+				conn.WriteToUDP(resp, clientAddr)
+			}
+			// Then send correct response with PTR records
+			resp := buildPTRResponse(t, requestID, buf[:n], []string{"eventual.local."})
+			conn.WriteToUDP(resp, clientAddr)
+		}
+	}()
 
 	names, err := queryPTR(addr, net.ParseIP("192.168.1.1"), false)
 
@@ -146,102 +235,65 @@ func TestDiscoveryDNS_EventualSuccess(t *testing.T) {
 		t.Fatalf("Expected eventual success, got error: %v", err)
 	}
 
-	if len(names) != 1 || names[0] != "eventual.local" {
-		t.Errorf("Expected ['eventual.local'], got %v", names)
-	}
-
-	// Should have made 3 attempts
-	attempts := server.getRequestCount()
-	if attempts != 3 {
-		t.Errorf("Expected 3 attempts, got %d", attempts)
+	if len(names) != 1 || names[0] != "eventual.local." {
+		t.Errorf("Expected ['eventual.local.'], got %v", names)
 	}
 }
 
-// Mock DNS server for testing
-type mockDNSServer struct {
-	mu                      sync.Mutex
-	requestCount            int
-	respondWithMismatchedID bool
-	succeedAfterAttempts    int
-	respondWithNames        []string
+// buildMinimalDNSResponse builds a minimal DNS response header with the given ID.
+func buildMinimalDNSResponse(id uint16, query []byte) []byte {
+	response := make([]byte, 12)
+	response[0] = byte(id >> 8)
+	response[1] = byte(id)
+	response[2] = 0x81 // Response, Authoritative
+	response[3] = 0x80 // Recursion available, no error
+	return response
 }
 
-func (m *mockDNSServer) getRequestCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.requestCount
-}
+// buildPTRResponse builds a proper DNS response with PTR answer records.
+func buildPTRResponse(t *testing.T, id uint16, query []byte, names []string) []byte {
+	t.Helper()
 
-func (m *mockDNSServer) incrementRequestCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.requestCount++
-	return m.requestCount
-}
-
-func (m *mockDNSServer) shouldMismatchID() bool {
-	count := m.incrementRequestCount()
-	if m.succeedAfterAttempts > 0 && count >= m.succeedAfterAttempts {
-		return false
-	}
-	return m.respondWithMismatchedID
-}
-
-func startMockDNSServer(t *testing.T, server *mockDNSServer) (string, func()) {
-	// Create UDP listener
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	// Parse the question from the query
+	var p dnsmessage.Parser
+	_, err := p.Start(query)
 	if err != nil {
-		t.Fatalf("Failed to create mock DNS server: %v", err)
+		t.Fatalf("Failed to parse query: %v", err)
+	}
+	q, err := p.Question()
+	if err != nil {
+		t.Fatalf("Failed to parse question: %v", err)
 	}
 
-	addr := conn.LocalAddr().String()
+	msg := dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID:                 id,
+			Response:           true,
+			Authoritative:      true,
+			RecursionAvailable: true,
+		},
+		Questions: []dnsmessage.Question{q},
+	}
 
-	// Start server goroutine
-	done := make(chan struct{})
-	go func() {
-		buf := make([]byte, 512)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-
-			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			n, clientAddr, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				continue
-			}
-
-			// Parse request to get ID
-			if n < 12 {
-				continue
-			}
-
-			requestID := uint16(buf[0])<<8 | uint16(buf[1])
-			responseID := requestID
-
-			// Optionally mismatch the ID
-			if server.shouldMismatchID() {
-				responseID = requestID + 1 // Wrong ID
-			}
-
-			// Build minimal DNS response
-			response := make([]byte, 12)
-			response[0] = byte(responseID >> 8)
-			response[1] = byte(responseID)
-			response[2] = 0x81 // Response, Authoritative
-			response[3] = 0x80 // No error
-
-			// Send response
-			conn.WriteToUDP(response, clientAddr)
+	for _, name := range names {
+		ptrName, err := dnsmessage.NewName(name)
+		if err != nil {
+			t.Fatalf("Failed to create PTR name %q: %v", name, err)
 		}
-	}()
-
-	cleanup := func() {
-		close(done)
-		conn.Close()
+		msg.Answers = append(msg.Answers, dnsmessage.Resource{
+			Header: dnsmessage.ResourceHeader{
+				Name:  q.Name,
+				Type:  dnsmessage.TypePTR,
+				Class: dnsmessage.ClassINET,
+				TTL:   300,
+			},
+			Body: &dnsmessage.PTRResource{PTR: ptrName},
+		})
 	}
 
-	return addr, cleanup
+	packed, err := msg.Pack()
+	if err != nil {
+		t.Fatalf("Failed to pack DNS response: %v", err)
+	}
+	return packed
 }

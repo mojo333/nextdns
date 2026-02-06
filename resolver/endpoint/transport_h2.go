@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
-	"runtime"
 	"time"
 )
 
@@ -45,10 +44,8 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 			return c, err
 		},
 		ForceAttemptHTTP2: true,
+		IdleConnTimeout:   90 * time.Second,
 	}
-	runtime.SetFinalizer(t, func(t *http.Transport) {
-		t.CloseIdleConnections()
-	})
 	if e.onConnect != nil {
 		t = roundTripperConnectTracer{
 			RoundTripper: t,

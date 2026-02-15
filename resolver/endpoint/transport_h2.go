@@ -23,6 +23,15 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 			ServerName:         e.Hostname,
 			RootCAs:            getRootCAs(),
 			ClientSessionCache: tls.NewLRUClientSessionCache(0),
+			// Exclude post-quantum hybrid key exchanges (SecP256r1MLKEM768,
+			// SecP384r1MLKEM1024) enabled by default in Go 1.26. These add
+			// ~1KB to TLS handshakes which is problematic on constrained
+			// router platforms (MIPS, ARM).
+			CurvePreferences: []tls.CurveID{
+				tls.X25519,
+				tls.CurveP256,
+				tls.CurveP384,
+			},
 		},
 		DialContext: func(ctx context.Context, network, _ string) (c net.Conn, err error) {
 			c, err = d.DialParallel(ctx, network, addrs)

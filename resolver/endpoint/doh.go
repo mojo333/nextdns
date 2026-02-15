@@ -75,8 +75,7 @@ func (e *DOHEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 	req = req.WithContext(ctx)
 	res, err := e.RoundTrip(req)
 	if err != nil {
-		var uaeErr x509.UnknownAuthorityError
-		if errors.As(err, &uaeErr) {
+		if uaeErr, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 			return 0, fmt.Errorf("roundtrip: %v (subject=%v, issuer=%v)",
 				err, uaeErr.Cert.Subject, uaeErr.Cert.Issuer)
 		}

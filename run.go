@@ -16,7 +16,6 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/denisbrodbeck/machineid"
-	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nextdns/nextdns/arp"
 	"github.com/nextdns/nextdns/config"
@@ -269,7 +268,7 @@ func run(args []string) error {
 		return fmt.Errorf("%s: cannot parse cache size: %v", c.CacheSize, err)
 	}
 	if cacheSize > 0 {
-		cc, err := lru.New[any, any](int(cacheSize))
+		cc, err := resolver.NewByteCache(cacheSize, c.CacheMetrics)
 		if err != nil {
 			log.Errorf("Cache init failed: %v", err)
 		} else {
@@ -278,16 +277,18 @@ func run(args []string) error {
 			p.resolver.DNS53.CacheMaxAge = maxAge
 			p.resolver.DOH.Cache = cc
 			p.resolver.DOH.CacheMaxAge = maxAge
-			ctl.Command("cache-keys", func(data interface{}) interface{} {
-				keys := []string{}
-				for _, k := range cc.Keys() {
-					keys = append(keys, fmt.Sprint(k))
-				}
-				return keys
-			})
 			ctl.Command("cache-stats", func(data interface{}) interface{} {
 				return p.resolver.CacheStats()
 			})
+			if c.CacheMetrics {
+				ctl.Command("cache-metrics", func(data interface{}) interface{} {
+					m := cc.Metrics()
+					if m == nil {
+						return "metrics not enabled"
+					}
+					return m.String()
+				})
+			}
 		}
 	}
 	maxTTL := uint32(c.MaxTTL / time.Second)

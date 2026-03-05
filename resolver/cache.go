@@ -1,9 +1,12 @@
 package resolver
 
 import (
+	"encoding/binary"
 	"fmt"
 	"time"
+	"github.com/cespare/xxhash/v2"
 
+	"github.com/nextdns/nextdns/internal/dnsmessage"
 	"github.com/nextdns/nextdns/resolver/query"
 )
 
@@ -16,6 +19,34 @@ type cacheKey struct {
 
 func (k cacheKey) String() string {
 	return fmt.Sprintf("%s %s %s %s", k.ctx, k.qclass, k.qtype, k.qname)
+}
+
+// Hash returns an xxhash digest of the cache key fields.
+func (k cacheKey) Hash() uint64 {
+	h := xxhash.New()
+	_, _ = h.WriteString(k.ctx)
+	var buf [4]byte
+	binary.BigEndian.PutUint16(buf[0:2], uint16(k.qclass))
+	binary.BigEndian.PutUint16(buf[2:4], uint16(k.qtype))
+	_, _ = h.Write(buf[:4])
+	_, _ = h.WriteString(k.qname)
+	return h.Sum64()
+}
+
+// ValidateQuestion checks that the first question in a cached DNS message
+// matches this cache key's qclass, qtype and qname.
+func (k cacheKey) ValidateQuestion(msg []byte) bool {
+	p := &dnsmessage.Parser{}
+	if _, err := p.Start(msg); err != nil {
+		return false
+	}
+	q, err := p.Question()
+	if err != nil {
+		return false
+	}
+	return q.Class == dnsmessage.Class(k.qclass) &&
+		q.Type == dnsmessage.Type(k.qtype) &&
+		q.Name.String() == k.qname
 }
 
 type cacheValue struct {
@@ -55,10 +86,10 @@ func updateTTL(msg []byte, age uint32, maxAge, maxTTL uint32) (minTTL uint32) {
 		return 0
 	}
 	// Read message header
-	questions := unpackUint16(msg[4:])
-	answers := unpackUint16(msg[6:])
-	authorities := unpackUint16(msg[8:])
-	additionals := unpackUint16(msg[10:])
+	questions := binary.BigEndian.Uint16(msg[4:])
+	answers := binary.BigEndian.Uint16(msg[6:])
+	authorities := binary.BigEndian.Uint16(msg[8:])
+	additionals := binary.BigEndian.Uint16(msg[10:])
 	// Skip message header
 	off := 12
 	// Skip questions
@@ -98,9 +129,9 @@ func updateTTL(msg []byte, age uint32, maxAge, maxTTL uint32) (minTTL uint32) {
 		}
 
 		// Update TTL (except if RR is OPT)
-		qtype := unpackUint16(msg[off-10:])
+		qtype := binary.BigEndian.Uint16(msg[off-10:])
 		if query.Type(qtype) != query.TypeOPT {
-			ttl := unpackUint32(msg[off-6:])
+			ttl := binary.BigEndian.Uint32(msg[off-6:])
 			if age > ttl {
 				ttl = 0
 			} else {
@@ -118,11 +149,11 @@ func updateTTL(msg []byte, age uint32, maxAge, maxTTL uint32) (minTTL uint32) {
 			if maxTTL > 0 && ttl > maxTTL {
 				ttl = maxTTL
 			}
-			packUint32(msg[off-6:], ttl)
+			binary.BigEndian.PutUint32(msg[off-6:], ttl)
 		}
 
 		// Skip the data part of the record
-		rdlen := unpackUint16(msg[off-2:])
+		rdlen := binary.BigEndian.Uint16(msg[off-2:])
 		off += int(rdlen)
 		if off > len(msg) {
 			// Invalid RR
@@ -133,21 +164,6 @@ func updateTTL(msg []byte, age uint32, maxAge, maxTTL uint32) (minTTL uint32) {
 		minTTL = 0
 	}
 	return minTTL
-}
-
-func unpackUint16(b []byte) uint16 {
-	return uint16(b[0])<<8 | uint16(b[1])
-}
-
-func unpackUint32(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
-func packUint32(b []byte, n uint32) {
-	b[0] = byte(n >> 24)
-	b[1] = byte(n >> 16)
-	b[2] = byte(n >> 8)
-	b[3] = byte(n)
 }
 
 func skipName(msg []byte) (newOff int) {

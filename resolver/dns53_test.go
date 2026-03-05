@@ -443,26 +443,24 @@ func makeTestQuery(t *testing.T, name string, qtype dnsmessage.Type) query.Query
 
 func newTestCache() *testCache {
 	return &testCache{
-		data: make(map[cacheKey]interface{}),
+		data: make(map[uint64]*cacheValue),
 	}
 }
 
 type testCache struct {
-	data map[cacheKey]interface{}
+	data map[uint64]*cacheValue
 	mu   sync.Mutex
 }
 
-func (c *testCache) Get(key interface{}) (interface{}, bool) {
+func (c *testCache) Get(key uint64) (*cacheValue, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v, ok := c.data[key.(cacheKey)]
+	v, ok := c.data[key]
 	return v, ok
 }
 
-func (c *testCache) Add(key, value any) bool {
+func (c *testCache) Set(key uint64, value *cacheValue) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, existed := c.data[key.(cacheKey)]
-	c.data[key.(cacheKey)] = value
-	return existed
+	c.data[key] = value
 }

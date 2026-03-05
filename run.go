@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cespare/xxhash"
+	"github.com/cespare/xxhash/v2"
 	"github.com/denisbrodbeck/machineid"
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nextdns/nextdns/arp"
 	"github.com/nextdns/nextdns/config"
@@ -269,7 +269,7 @@ func run(args []string) error {
 		return fmt.Errorf("%s: cannot parse cache size: %v", c.CacheSize, err)
 	}
 	if cacheSize > 0 {
-		cc, err := lru.NewARC(int(cacheSize))
+		cc, err := lru.New[any, any](int(cacheSize))
 		if err != nil {
 			log.Errorf("Cache init failed: %v", err)
 		} else {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nextdns/nextdns/host"
 	"github.com/nextdns/nextdns/internal/dnsmessage"
@@ -16,7 +16,7 @@ import (
 type DNS struct {
 	Upstream string
 
-	cache *lru.Cache
+	cache *lru.Cache[string, cacheEntry]
 	once  sync.Once
 
 	antiLoop semaphoreMap
@@ -35,7 +35,7 @@ func (r *DNS) init() {
 		// the RD flag at the risk of creating DNS loops.
 		r.rd = probeBuggyDNSMasq(r.Upstream)
 	}()
-	r.cache, _ = lru.New(10000)
+	r.cache, _ = lru.New[string, cacheEntry](10000)
 	if r.Upstream != "" {
 		return
 	}
@@ -59,9 +59,9 @@ func (r *DNS) Name() string {
 func (r *DNS) Visit(f func(name string, addrs []string)) {
 	r.once.Do(r.init)
 	for _, key := range r.cache.Keys() {
-		values, found := r.cacheGet(key.(string))
+		values, found := r.cacheGet(key)
 		if found {
-			f(key.(string), values)
+			f(key, values)
 		}
 	}
 }
@@ -131,11 +131,7 @@ func (r *DNS) runSingle(f func(string) []string, arg string) []string {
 }
 
 func (r *DNS) cacheGet(key string) (rrs []string, found bool) {
-	v, ok := r.cache.Get(key)
-	if !ok {
-		return nil, false
-	}
-	e, ok := v.(cacheEntry)
+	e, ok := r.cache.Get(key)
 	if !ok {
 		return nil, false
 	}

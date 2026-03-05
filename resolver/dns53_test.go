@@ -459,8 +459,10 @@ func (c *testCache) Get(key interface{}) (interface{}, bool) {
 	return v, ok
 }
 
-func (c *testCache) Add(key, value interface{}) {
+func (c *testCache) Add(key, value any) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_, existed := c.data[key.(cacheKey)]
 	c.data[key.(cacheKey)] = value
+	return existed
 }

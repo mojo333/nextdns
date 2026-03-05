@@ -25,8 +25,8 @@ type Resolver interface {
 }
 
 type Cacher interface {
-	Add(key, value interface{})
-	Get(key interface{}) (value interface{}, ok bool)
+	Add(key, value any) bool
+	Get(key any) (value any, ok bool)
 }
 
 type CacheStats struct {

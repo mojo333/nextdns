@@ -1,8 +1,12 @@
 package discovery
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -88,6 +92,49 @@ lease 10.0.1.3 {
 				t.Errorf("readDHCPDLease() names = %v, want %v", names, tt.wantNames)
 			}
 		})
+	}
+}
+
+func TestDHCPConcurrentRefresh(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "dnsmasq.leases")
+
+	var b strings.Builder
+	for i := 0; i < 512; i++ {
+		fmt.Fprintf(&b, "%d 00:0f:66:4c:fc:c8 192.168.50.12 host-%d *\n", 56789+i, i)
+	}
+	if err := os.WriteFile(file, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", file, err)
+	}
+
+	prevLeaseFiles := leaseFiles
+	leaseFiles = []leaseFile{{file: file, format: "dnsmasq"}}
+	t.Cleanup(func() {
+		leaseFiles = prevLeaseFiles
+	})
+
+	r := &DHCP{}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errC := make(chan error, 64)
+
+	for i := 0; i < cap(errC); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if got := r.LookupAddr("192.168.50.12"); len(got) == 0 {
+				errC <- fmt.Errorf("LookupAddr() returned no hostnames")
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errC)
+
+	for err := range errC {
+		t.Fatal(err)
 	}
 }
 

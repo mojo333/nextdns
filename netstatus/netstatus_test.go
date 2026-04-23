@@ -2,6 +2,7 @@ package netstatus
 
 import (
 	"net"
+	"runtime"
 	"testing"
 )
 
@@ -93,6 +94,20 @@ func (addr strAddr) String() string {
 }
 func (strAddr) Network() string {
 	return ""
+}
+
+func TestNotifyStopConcurrent(t *testing.T) {
+	handlers.Lock()
+	handlers.c = nil
+	cancel = nil
+	handlers.Unlock()
+
+	for i := 0; i < 128; i++ {
+		c := make(chan Change, 1)
+		Notify(c)
+		runtime.Gosched()
+		Stop(c)
+	}
 }
 
 func Test_diffAddrs(t *testing.T) {

@@ -61,33 +61,45 @@ func (r *DHCP) Name() string {
 }
 
 func (r *DHCP) Visit(f func(name string, addrs []string)) {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	for name, addrs := range r.names {
 		f(name, addrs)
 	}
 }
 
 func (r *DHCP) LookupMAC(mac string) []string {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	return r.macs[mac]
 }
 
 func (r *DHCP) LookupAddr(addr string) []string {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	return r.addrs[addr]
 }
 
 func (r *DHCP) LookupHost(name string) []string {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	return r.names[prepareHostLookup(name)]
+}
+
+func (r *DHCP) refresh() {
+	r.mu.RLock()
+	expired := !time.Now().Before(r.expires)
+	r.mu.RUnlock()
+	if !expired {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
 }
 
 func findLeaseFile() (string, string) {

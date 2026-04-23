@@ -18,6 +18,8 @@ import (
 
 const maxTCPSize = 65535
 
+var tcpClientReadTimeout = 10 * time.Second
+
 func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
 	bpool := NewTieredBufferPool()
 
@@ -48,9 +50,13 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 	}()
 
 	for {
+		if tcpClientReadTimeout > 0 {
+			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
+		}
 		inflightRequests <- struct{}{}
 		buf := *bpool.GetLarge() // Always use large buffer for TCP
 		qsize, err := readTCP(c, buf)
+		_ = c.SetReadDeadline(time.Time{})
 		if err != nil {
 			bpool.Put(&buf)
 			<-inflightRequests

@@ -76,6 +76,8 @@ type Proxy struct {
 	ErrorLog func(error)
 }
 
+const defaultMaxInflightRequests = 256
+
 // ListenAndServe listens on UDP and TCP and serve DNS queries. If ctx is
 // canceled, listeners are closed and ListenAndServe returns context.Canceled
 // error.
@@ -110,7 +112,7 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 	errs := make(chan error, expReturns)
 	var closeAll []func() error
 	var closeAllMu sync.Mutex
-	inflightRequests := make(chan struct{}, p.MaxInflightRequests)
+	inflightRequests := make(chan struct{}, p.maxInflightRequests())
 
 	for _, addr := range addrs {
 		go func(addr string) {
@@ -192,6 +194,13 @@ func (p Proxy) Resolve(ctx context.Context, q query.Query, buf []byte) (n int, i
 	}
 
 	return n, i, err
+}
+
+func (p Proxy) maxInflightRequests() int {
+	if p.MaxInflightRequests == 0 {
+		return defaultMaxInflightRequests
+	}
+	return int(p.MaxInflightRequests)
 }
 
 func (p Proxy) logQuery(q QueryInfo) {

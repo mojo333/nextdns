@@ -30,6 +30,38 @@ func (m *mockSlowResolver) Resolve(ctx context.Context, q query.Query, buf []byt
 	return 12, resolver.ResolveInfo{}, nil
 }
 
+func TestServeTCPConn_IdleReadTimeout(t *testing.T) {
+	prev := tcpClientReadTimeout
+	tcpClientReadTimeout = 50 * time.Millisecond
+	t.Cleanup(func() {
+		tcpClientReadTimeout = prev
+	})
+
+	server, client := net.Pipe()
+	defer client.Close()
+
+	bpool := NewTieredBufferPool()
+	inflightRequests := make(chan struct{}, 1)
+	errC := make(chan error, 1)
+
+	go func() {
+		errC <- (Proxy{}).serveTCPConn(server, inflightRequests, bpool)
+	}()
+
+	select {
+	case err := <-errC:
+		if err == nil {
+			t.Fatal("serveTCPConn() err = nil, want timeout error")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("serveTCPConn() did not time out idle client")
+	}
+
+	if got := len(inflightRequests); got != 0 {
+		t.Fatalf("inflightRequests len = %d, want 0", got)
+	}
+}
+
 // TestTCPConn_WaitsForInflightQueries verifies that serveTCPConn waits
 // for all in-flight query goroutines to complete before closing the connection.
 // This prevents "use of closed network connection" errors.

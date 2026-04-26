@@ -6,42 +6,6 @@ import (
 	"time"
 )
 
-// Helper function to create server and client with timeout/skip
-func setupClientTest(t *testing.T) (*Server, *Client) {
-	s := &Server{
-		Addr: testAddr(t),
-	}
-
-	if err := s.Start(); err != nil {
-		t.Skipf("Cannot start server (socket/pipe not available): %v", err)
-	}
-
-	// Dial with timeout
-	dialDone := make(chan *Client, 1)
-	dialErr := make(chan error, 1)
-
-	go func() {
-		c, err := Dial(s.Addr)
-		if err != nil {
-			dialErr <- err
-		} else {
-			dialDone <- c
-		}
-	}()
-
-	select {
-	case c := <-dialDone:
-		return s, c
-	case err := <-dialErr:
-		s.Stop()
-		t.Skipf("Cannot dial server (socket/pipe not available): %v", err)
-	case <-time.After(2 * time.Second):
-		s.Stop()
-		t.Skip("Dial timed out (socket/pipe not available)")
-	}
-	return nil, nil
-}
-
 // TestClient_ReplyChannel_NoOverflow verifies that the reply channel
 // buffer (size 10) can handle concurrent replies without overflow.
 // This is a regression test for the fix in commit e0dd08f.

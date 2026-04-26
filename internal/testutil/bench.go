@@ -18,7 +18,8 @@ func NewBufferPool(size int) *BufferPool {
 	return &BufferPool{
 		pool: sync.Pool{
 			New: func() interface{} {
-				return make([]byte, size)
+				b := make([]byte, size)
+				return &b
 			},
 		},
 		size: size,
@@ -27,12 +28,12 @@ func NewBufferPool(size int) *BufferPool {
 
 // Get retrieves a buffer from the pool.
 func (p *BufferPool) Get() []byte {
-	return p.pool.Get().([]byte)
+	return *p.pool.Get().(*[]byte)
 }
 
 // Put returns a buffer to the pool.
 func (p *BufferPool) Put(buf []byte) {
-	p.pool.Put(buf)
+	p.pool.Put(&buf)
 }
 
 // TieredBufferPool manages multiple buffer pools of different sizes.

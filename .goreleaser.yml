@@ -36,6 +36,9 @@ builds:
   -
     goos: windows
     goarch: arm64
+  -
+    goos: windows
+    goarch: arm
 archives:
 -
   format_overrides:
@@ -100,38 +103,6 @@ nfpms:
     apk:
       scripts:
           postupgrade: ".goreleaser/apk/post-upgrade"
-dockers:
-  - image_templates:
-      - "nextdns/nextdns:{{ .Version }}-amd64"
-    use: buildx
-    dockerfile: Dockerfile
-    build_flag_templates: ["--platform=linux/amd64"]
-  - image_templates:
-      - "nextdns/nextdns:{{ .Version }}-armv7"
-    use: buildx
-    goarch: arm
-    goarm: 7
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm/v7"
-  - image_templates:
-      - "nextdns/nextdns:{{ .Version }}-arm64"
-    use: buildx
-    goarch: arm64
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-docker_manifests:
-  - name_template: "nextdns/nextdns:{{ .Version }}"
-    image_templates:
-      - "nextdns/nextdns:{{ .Version }}-amd64"
-      - "nextdns/nextdns:{{ .Version }}-armv7"
-      - "nextdns/nextdns:{{ .Version }}-arm64"
-  - name_template: "nextdns/nextdns:latest"
-    image_templates:
-      - "nextdns/nextdns:{{ .Version }}-amd64"
-      - "nextdns/nextdns:{{ .Version }}-armv7"
-      - "nextdns/nextdns:{{ .Version }}-arm64"
 changelog:
   groups:
     - title: "✨ New Features"

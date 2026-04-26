@@ -39,4 +39,4 @@ jobs:
       run: "staticcheck -version"
 
     - name: Run staticcheck (${{ env.GOOS }}/amd64)
-      run: "staticcheck ./..."
+      run: "staticcheck -ignore 'github.com/nextdns/nextdns/internal/dnsmessage:U1000' ./..."

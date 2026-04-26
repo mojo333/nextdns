@@ -1,0 +1,14 @@
+issues:
+  exclude-rules:
+    # internal/dnsmessage is vendored from golang.org/x/net/dns/dnsmessage;
+    # unused symbols exist in the upstream source and must not be deleted.
+    - path: internal/dnsmessage/
+      linters:
+        - unused
+    # Unchecked errors in test teardown/helpers are idiomatic Go test code.
+    - path: _test\.go
+      linters:
+        - errcheck
+    - path: internal/testutil/
+      linters:
+        - errcheck

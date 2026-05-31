@@ -61,6 +61,9 @@ func (p *proxySvc) Start() (err error) {
 				p.log.Infof("Network not yet ready, waiting")
 				time.Sleep(backoff)
 				backoff <<= 1
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
 				continue
 			}
 			return err
@@ -98,9 +101,9 @@ func (p *proxySvc) start() (err error) {
 		for _, f := range p.OnInit {
 			go f(ctx)
 		}
-		if err = p.ListenAndServe(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if listenErr := p.ListenAndServe(ctx); listenErr != nil && !errors.Is(listenErr, context.Canceled) {
 			select {
-			case errC <- err:
+			case errC <- listenErr:
 			default:
 			}
 		}
@@ -272,6 +275,7 @@ func run(args []string) error {
 		if err != nil {
 			log.Errorf("Cache init failed: %v", err)
 		} else {
+			p.OnStopped = append(p.OnStopped, cc.Close)
 			maxAge := uint32(c.CacheMaxAge / time.Second)
 			p.resolver.DNS53.Cache = cc
 			p.resolver.DNS53.CacheMaxAge = maxAge
@@ -427,13 +431,19 @@ func run(args []string) error {
 		// of the best endpoint sooner than later. We also reset the startup
 		// time so plain DNS fallback happen again (useful for captive portals).
 		p.OnInit = append(p.OnInit, func(ctx context.Context) {
-			netChange := make(chan netstatus.Change)
+			netChange := make(chan netstatus.Change, 1)
 			netstatus.Notify(netChange)
-			for c := range netChange {
-				log.Infof("Network change detected: %s", c)
-				startup = time.Now() // reset the startup marker so DNS fallback can happen again.
-				if err := p.resolver.Manager.Test(ctx); err != nil {
-					log.Errorf("Test after network change failed: %v", err)
+			defer netstatus.Stop(netChange)
+			for {
+				select {
+				case c := <-netChange:
+					log.Infof("Network change detected: %s", c)
+					startup = time.Now() // reset the startup marker so DNS fallback can happen again.
+					if err := p.resolver.Manager.Test(ctx); err != nil {
+						log.Errorf("Test after network change failed: %v", err)
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		})

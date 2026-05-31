@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -291,7 +292,7 @@ func sendQuery(dns string, buf []byte, typ dnsmessage.Type) (rrs []string, err e
 	}
 	for maxRR := 100; maxRR > 0; maxRR-- {
 		h, err := p.AnswerHeader()
-		if err == dnsmessage.ErrSectionDone {
+		if errors.Is(err, dnsmessage.ErrSectionDone) {
 			break
 		}
 		if err != nil {

@@ -85,11 +85,18 @@ func (e *DOHEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 	if res.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("status: %d", res.StatusCode)
 	}
-	n, err = res.Body.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return n, fmt.Errorf("read: %v", err)
+	for n < len(buf) {
+		var nn int
+		nn, err = res.Body.Read(buf[n:])
+		n += nn
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = nil
+			}
+			break
+		}
 	}
-	return n, nil
+	return n, err
 }
 
 func (e *DOHEndpoint) RoundTrip(req *http.Request) (resp *http.Response, err error) {

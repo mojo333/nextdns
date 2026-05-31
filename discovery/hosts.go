@@ -48,26 +48,38 @@ func (r *Hosts) Name() string {
 	return "hosts"
 }
 
+func (r *Hosts) refresh() {
+	r.mu.RLock()
+	expired := !time.Now().Before(r.expires)
+	r.mu.RUnlock()
+	if !expired {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
+}
+
 func (r *Hosts) Visit(f func(name string, addrs []string)) {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	for name, addrs := range r.names {
 		f(name, addrs)
 	}
 }
 
 func (r *Hosts) LookupAddr(addr string) []string {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	return r.addrs[addr]
 }
 
 func (r *Hosts) LookupHost(name string) []string {
+	r.refresh()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.refreshLocked()
 	return r.names[prepareHostLookup(name)]
 }
 

@@ -60,7 +60,7 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 		if err != nil {
 			bpool.Put(&buf)
 			<-inflightRequests
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return fmt.Errorf("TCP read: %v", err)

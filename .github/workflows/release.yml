@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          LDFLAGS="-s -w -X main.version=$VERSION"
+          mkdir -p dist
+
+          build() {
+            local GOOS=$1 GOARCH=$2 GOARM=$3
+            local arch_name=${GOARM:+armv$GOARM}; arch_name=${arch_name:-$GOARCH}
+            local out="nextdns"; [ "$GOOS" = "windows" ] && out="nextdns.exe"
+            local archive="dist/nextdns_${VERSION}_${GOOS}_${arch_name}.tar.gz"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH GOARM=$GOARM \
+              go build -ldflags "$LDFLAGS" -o "$out" .
+            tar czf "$archive" "$out"
+            rm "$out"
+          }
+
+          build linux  amd64
+          build linux  arm64
+          build linux  arm   7
+          build freebsd amd64
+          build freebsd arm64
+
+          cd dist && sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

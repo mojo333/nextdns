@@ -78,6 +78,21 @@ type Proxy struct {
 
 const defaultMaxInflightRequests = 256
 
+// defaultRequestTimeout bounds request handling when Timeout is left unset
+// (or set to 0) so a hung upstream can never pin an inflight slot forever.
+const defaultRequestTimeout = 5 * time.Second
+
+// shutdownGraceTimeout bounds how long ListenAndServe waits for in-flight
+// request handlers after its context is cancelled.
+const shutdownGraceTimeout = 5 * time.Second
+
+func (p Proxy) requestTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+	return defaultRequestTimeout
+}
+
 // ListenAndServe listens on UDP and TCP and serve DNS queries. If ctx is
 // canceled, listeners are closed and ListenAndServe returns context.Canceled
 // error.
@@ -112,6 +127,19 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 	errs := make(chan error, expReturns)
 	var closeAll []func() error
 	var closeAllMu sync.Mutex
+	closing := false
+	// registerCloser records a listener to close on shutdown, or closes it
+	// right away if shutdown already started while the listener was binding.
+	registerCloser := func(close func() error) {
+		closeAllMu.Lock()
+		defer closeAllMu.Unlock()
+		if closing {
+			_ = close()
+			return
+		}
+		closeAll = append(closeAll, close)
+	}
+	var inflight sync.WaitGroup
 	inflightRequests := make(chan struct{}, p.maxInflightRequests())
 
 	for _, addr := range addrs {
@@ -120,10 +148,8 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 			p.logInfof("Listening on UDP/%s", addr)
 			udp, err := lc.ListenPacket(ctx, "udp", addr)
 			if err == nil {
-				closeAllMu.Lock()
-				closeAll = append(closeAll, udp.Close)
-				closeAllMu.Unlock()
-				err = p.serveUDP(udp, inflightRequests)
+				registerCloser(udp.Close)
+				err = p.serveUDP(ctx, udp, inflightRequests, &inflight)
 			}
 			cancel()
 			if err != nil {
@@ -137,10 +163,8 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 			p.logInfof("Listening on TCP/%s", addr)
 			tcp, err := lc.Listen(ctx, "tcp", addr)
 			if err == nil {
-				closeAllMu.Lock()
-				closeAll = append(closeAll, tcp.Close)
-				closeAllMu.Unlock()
-				err = p.serveTCP(tcp, inflightRequests)
+				registerCloser(tcp.Close)
+				err = p.serveTCP(ctx, tcp, inflightRequests, &inflight)
 			}
 			cancel()
 			if err != nil {
@@ -152,9 +176,12 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 
 	<-ctx.Done()
 	errs <- ctx.Err()
+	closeAllMu.Lock()
+	closing = true
 	for _, close := range closeAll {
 		_ = close()
 	}
+	closeAllMu.Unlock()
 	// Wait for the two sockets (+ ctx err) to be terminated and return the
 	// initial error.
 	var err error
@@ -162,6 +189,18 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 		if e := <-errs; (err == nil || errors.Is(err, context.Canceled)) && e != nil {
 			err = e
 		}
+	}
+	// Wait for in-flight request handlers (bounded by their request timeout)
+	// so callers can safely tear down the upstream resolver once we return.
+	handlersDone := make(chan struct{})
+	go func() {
+		inflight.Wait()
+		close(handlersDone)
+	}()
+	select {
+	case <-handlersDone:
+	case <-time.After(shutdownGraceTimeout):
+		p.logErr(errors.New("shutdown: in-flight requests did not complete within grace period"))
 	}
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)

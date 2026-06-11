@@ -262,3 +262,35 @@ func TestNDPCache_IPv6Addresses(t *testing.T) {
 		}
 	}
 }
+
+// TestNDPCache_StopDuringRefreshDropsLateStore verifies that a refresh
+// already in flight when Stop() is called does not store its result after
+// the cache has been stopped.
+func TestNDPCache_StopDuringRefreshDropsLateStore(t *testing.T) {
+	// Arrange
+	prev := getTable
+	t.Cleanup(func() { getTable = prev })
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	getTable = func() (Table, error) {
+		close(started)
+		<-unblock
+		return Table{}, nil
+	}
+	c := newCache()
+
+	// Act: trigger a refresh, stop while it is in flight, let it finish.
+	_ = c.get()
+	<-started
+	c.Stop()
+	close(unblock)
+
+	// Assert: the late result must never be stored.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if c.table.Load() != nil {
+			t.Fatal("refresh stored its result after Stop()")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

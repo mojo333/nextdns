@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sync"
 	"time"
 
 	"golang.org/x/net/ipv4"
@@ -37,7 +38,7 @@ var udpOOBSize = func() int {
 	return len(oob6)
 }()
 
-func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error {
+func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	// Use the same buffer size as for TCP and truncate later. UDP and
 	// TCP share the cache, and we want to avoid storing truncated
 	// response for UDP that would be reused when the client falls back
@@ -70,7 +71,9 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 			continue
 		}
 		start := time.Now()
+		inflight.Add(1)
 		go func() {
+			defer inflight.Done()
 			var err error
 			var rsize int
 			var ri resolver.ResolveInfo
@@ -102,12 +105,10 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 					Error:             err,
 				})
 			}()
-			ctx := context.Background()
-			if p.Timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, p.Timeout)
-				defer cancel()
-			}
+			// Derive from the serve context so shutdown cancels in-flight
+			// requests; the timeout bounds them even when Timeout is 0.
+			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
+			defer cancel()
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}

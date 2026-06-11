@@ -5,7 +5,6 @@ package host
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 )
@@ -15,12 +14,16 @@ func newServiceLogger(name string) (Logger, error) {
 }
 
 func ReadLog(name string) ([]byte, error) {
+	pattern, err := logGrepPattern(name)
+	if err != nil {
+		return nil, err
+	}
 	logFile := "/var/log/messages"
 	// pfSense
 	if _, err := os.Stat("/var/log/system.log"); err == nil {
 		logFile = "/var/log/system.log"
 	}
-	return exec.Command("grep", fmt.Sprintf(` %s\(:\|\[\)`, name), logFile).Output()
+	return exec.Command("grep", pattern, logFile).Output()
 }
 
 func FollowLog(name string) error {

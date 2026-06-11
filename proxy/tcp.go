@@ -20,7 +20,7 @@ const maxTCPSize = 65535
 
 var tcpClientReadTimeout = 10 * time.Second
 
-func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
+func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := NewTieredBufferPool()
 
 	for {
@@ -31,8 +31,10 @@ func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
 			}
 			return err
 		}
+		inflight.Add(1)
 		go func() {
-			if err := p.serveTCPConn(c, inflightRequests, bpool); err != nil {
+			defer inflight.Done()
+			if err := p.serveTCPConn(ctx, c, inflightRequests, bpool); err != nil {
 				if p.ErrorLog != nil {
 					p.ErrorLog(err)
 				}
@@ -41,12 +43,24 @@ func (p Proxy) serveTCP(l net.Listener, inflightRequests chan struct{}) error {
 	}
 }
 
-func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *TieredBufferPool) error {
+func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *TieredBufferPool) error {
 	var wg sync.WaitGroup
 	defer func() {
 		// Wait for all query processing goroutines to complete before closing
 		wg.Wait()
 		c.Close()
+	}()
+
+	// Unblock the read loop as soon as the serve context is cancelled so
+	// shutdown does not have to wait for the client read timeout.
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.SetReadDeadline(time.Now())
+		case <-watcherDone:
+		}
 	}()
 
 	for {
@@ -107,12 +121,10 @@ func (p Proxy) serveTCPConn(c net.Conn, inflightRequests chan struct{}, bpool *T
 					Error:             err,
 				})
 			}()
-			ctx := context.Background()
-			if p.Timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, p.Timeout)
-				defer cancel()
-			}
+			// Derive from the serve context so shutdown cancels in-flight
+			// requests; the timeout bounds them even when Timeout is 0.
+			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
+			defer cancel()
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}

@@ -14,6 +14,9 @@ type cache struct {
 	cancel     context.CancelFunc
 }
 
+// getTable indirects Get so tests can stub the underlying table fetch.
+var getTable = Get
+
 func (c *cache) get() Table {
 	now := time.Now().UTC().Unix()
 	last := atomic.LoadInt64(&c.lastUpdate)
@@ -26,7 +29,11 @@ func (c *cache) get() Table {
 				default:
 				}
 			}
-			t, _ := Get()
+			t, _ := getTable()
+			if c.ctx != nil && c.ctx.Err() != nil {
+				// Stopped while the refresh was in flight; drop the result.
+				return
+			}
 			c.table.Store(t)
 		}()
 	}

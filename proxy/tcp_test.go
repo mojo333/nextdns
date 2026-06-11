@@ -45,7 +45,7 @@ func TestServeTCPConn_IdleReadTimeout(t *testing.T) {
 	errC := make(chan error, 1)
 
 	go func() {
-		errC <- (Proxy{}).serveTCPConn(server, inflightRequests, bpool)
+		errC <- (Proxy{}).serveTCPConn(context.Background(), server, inflightRequests, bpool)
 	}()
 
 	select {
@@ -107,7 +107,7 @@ func TestTCPConn_WaitsForInflightQueries(t *testing.T) {
 		}
 		inflightRequests := make(chan struct{}, 10)
 		bpool := NewTieredBufferPool()
-		_ = p.serveTCPConn(conn, inflightRequests, bpool)
+		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
 	// Give server time to start
@@ -199,7 +199,7 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 		}
 		inflightRequests := make(chan struct{}, 10)
 		bpool := NewTieredBufferPool()
-		_ = p.serveTCPConn(conn, inflightRequests, bpool)
+		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -276,7 +276,7 @@ func TestTCPConn_GracefulShutdown(t *testing.T) {
 		}
 		inflightRequests := make(chan struct{}, 10)
 		bpool := NewTieredBufferPool()
-		_ = p.serveTCPConn(conn, inflightRequests, bpool)
+		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 		close(serverDone)
 	}()
 

@@ -15,9 +15,7 @@ type Merlin struct {
 	once      sync.Once
 	supported bool
 
-	mu      sync.RWMutex
-	macs    map[string][]string
-	expires time.Time
+	table macTable
 }
 
 func (r *Merlin) init() {
@@ -27,19 +25,12 @@ func (r *Merlin) init() {
 	}
 }
 
-func (r *Merlin) refreshLocked() {
+func (r *Merlin) refresh() {
 	r.once.Do(r.init)
 	if !r.supported {
 		return
 	}
-
-	now := time.Now()
-	if now.Before(r.expires) {
-		return
-	}
-	r.expires = now.Add(30 * time.Second)
-
-	if err := r.clientListLocked(); err != nil && r.OnError != nil {
+	if err := r.table.refresh(30*time.Second, clientListMerlin); err != nil && r.OnError != nil {
 		r.OnError(fmt.Errorf("clientList: %v", err))
 	}
 }
@@ -49,25 +40,13 @@ func (r *Merlin) Name() string {
 }
 
 func (r *Merlin) Visit(f func(name string, macs []string)) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	r.refreshLocked()
-	m := map[string][]string{}
-	for mac, names := range r.macs {
-		for _, name := range names {
-			m[name] = append(m[name], mac)
-		}
-	}
-	for name, macs := range m {
-		f(name, macs)
-	}
+	r.refresh()
+	r.table.visit(f)
 }
 
 func (r *Merlin) LookupMAC(mac string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	r.refreshLocked()
-	return r.macs[mac]
+	r.refresh()
+	return r.table.lookupMAC(mac)
 }
 
 func (r *Merlin) LookupAddr(addr string) []string {
@@ -78,22 +57,17 @@ func (r *Merlin) LookupHost(name string) []string {
 	return nil
 }
 
-func (r *Merlin) clientListLocked() error {
+func clientListMerlin() (map[string][]string, error) {
 	cmd := exec.Command("nvram", "get", "custom_clientlist")
 	b, err := cmd.Output()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Dirty hack - attempt to add '<' char when var is populated, but opening '<' is non-existent
 	if len(b) > 0 && b[0] != '<' {
 		b = append([]byte{'<'}, b[0:]...)
 	}
-	macs, err := readClientList(b)
-	if err != nil {
-		return err
-	}
-	r.macs = macs
-	return nil
+	return readClientList(b)
 }
 
 func readClientList(b []byte) (macs map[string][]string, err error) {

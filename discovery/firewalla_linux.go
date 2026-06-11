@@ -23,9 +23,7 @@ type Firewalla struct {
 	once      sync.Once
 	supported bool
 
-	mu      sync.RWMutex
-	macs    map[string][]string
-	expires time.Time
+	table macTable
 }
 
 func isFirewalla() bool {
@@ -39,19 +37,12 @@ func (r *Firewalla) init() {
 	}
 }
 
-func (r *Firewalla) refreshLocked() {
+func (r *Firewalla) refresh() {
 	r.once.Do(r.init)
 	if !r.supported {
 		return
 	}
-
-	now := time.Now()
-	if now.Before(r.expires) {
-		return
-	}
-	r.expires = now.Add(5 * time.Minute)
-
-	if err := r.clientListLocked(); err != nil && r.OnError != nil {
+	if err := r.table.refresh(5*time.Minute, r.clientList); err != nil && r.OnError != nil {
 		r.OnError(fmt.Errorf("clientList: %v", err))
 	}
 }
@@ -61,25 +52,13 @@ func (r *Firewalla) Name() string {
 }
 
 func (r *Firewalla) Visit(f func(name string, macs []string)) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	r.refreshLocked()
-	m := map[string][]string{}
-	for mac, names := range r.macs {
-		for _, name := range names {
-			m[name] = append(m[name], mac)
-		}
-	}
-	for name, macs := range m {
-		f(name, macs)
-	}
+	r.refresh()
+	r.table.visit(f)
 }
 
 func (r *Firewalla) LookupMAC(mac string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	r.refreshLocked()
-	return r.macs[mac]
+	r.refresh()
+	return r.table.lookupMAC(mac)
 }
 
 func (r *Firewalla) LookupAddr(addr string) []string {
@@ -90,22 +69,27 @@ func (r *Firewalla) LookupHost(name string) []string {
 	return nil
 }
 
-func (r *Firewalla) clientListLocked() error {
+func (r *Firewalla) clientList() (map[string][]string, error) {
 	lfh, err := os.CreateTemp("", "firewalla.lua")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err = lfh.Write([]byte(firewallaRedisScript)); err != nil {
-		return err
-	}
-	lfh.Close()
 	luaScript := lfh.Name()
 	defer os.Remove(luaScript)
-	cmd := exec.Command("/usr/bin/redis-cli", "--eval", luaScript)
-	b, err := cmd.Output()
-	if err != nil {
-		return err
+	_, werr := lfh.Write([]byte(firewallaRedisScript))
+	if cerr := lfh.Close(); werr == nil {
+		werr = cerr
 	}
-	d := json.NewDecoder(bytes.NewReader(b))
-	return d.Decode(&r.macs)
+	if werr != nil {
+		return nil, werr
+	}
+	b, err := exec.Command("/usr/bin/redis-cli", "--eval", luaScript).Output()
+	if err != nil {
+		return nil, err
+	}
+	var macs map[string][]string
+	if err := json.NewDecoder(bytes.NewReader(b)).Decode(&macs); err != nil {
+		return nil, err
+	}
+	return macs, nil
 }

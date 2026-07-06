@@ -165,6 +165,10 @@ func (qry *Query) parse() error {
 	_ = p.SkipAllQuestions()
 	_ = p.SkipAllAnswers()
 	_ = p.SkipAllAuthorities()
+	// Capture the real transport peer before an EDNS0 subnet option below can
+	// rewrite qry.PeerIP, so a client cannot claim loopback to get its MAC
+	// trusted.
+	fromLoopback := qry.PeerIP.IsLoopback()
 	for {
 		h, err := p.AdditionalHeader()
 		if err != nil {
@@ -182,7 +186,13 @@ func (qry *Query) parse() error {
 			for _, o := range opt.Options {
 				switch o.Code {
 				case EDNS0_MAC:
-					qry.MAC = net.HardwareAddr(o.Data)
+					// Only trust a client-supplied MAC from a local forwarder
+					// (e.g. dnsmasq --add-mac on loopback). A direct LAN client
+					// could otherwise spoof another device's MAC to select a
+					// different per-MAC profile.
+					if fromLoopback && len(o.Data) == 6 {
+						qry.MAC = net.HardwareAddr(o.Data)
+					}
 				case EDNS0_SUBNET:
 					if len(o.Data) < 8 {
 						continue

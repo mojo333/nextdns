@@ -1141,7 +1141,7 @@ openssl_get() {
     path=/${host#*/}    # dom.com/path -> /path
     host=${host%$path}  # dom.com/path -> dom.com
     printf "GET %s HTTP/1.0\nHost: %s\nUser-Agent: curl\n\n" "$path" "$host" |
-        openssl s_client -quiet -connect "$host:443" 2>/dev/null
+        openssl s_client -quiet -verify_return_error -connect "$host:443" 2>/dev/null
 }
 
 umask 0022

@@ -14,6 +14,22 @@
 GITHUB_REPO="${CUSTOM_GITHUB_REPO:-nextdns/nextdns}"  # Default to original if not set
 REPO_BASE_URL="${CUSTOM_REPO_URL:-https://repo.nextdns.io}"  # Default to original
 
+# These values are interpolated into privileged (root) commands below. Reject
+# anything outside a safe URL/repo charset so a shell metacharacter can't break
+# out and execute arbitrary code as root.
+case "$REPO_BASE_URL" in
+    *[!A-Za-z0-9:/._-]*)
+        printf 'Invalid CUSTOM_REPO_URL: %s\n' "$REPO_BASE_URL" >&2
+        exit 1
+        ;;
+esac
+case "$GITHUB_REPO" in
+    *[!A-Za-z0-9/._-]*)
+        printf 'Invalid CUSTOM_GITHUB_REPO: %s\n' "$GITHUB_REPO" >&2
+        exit 1
+        ;;
+esac
+
 log_info "Using GitHub repository: $GITHUB_REPO"
 log_info "Using package repository: $REPO_BASE_URL"
 
@@ -322,7 +338,8 @@ install_deb_keyring() {
 
 install_source() {
     if [ ! -f /etc/apt/sources.list.d/nextdns.list ]; then
-        asroot sh -c "echo \"deb [signed-by=/etc/apt/keyrings/nextdns.gpg] ${REPO_BASE_URL}/deb stable main\" > /etc/apt/sources.list.d/nextdns.list" &&
+        printf 'deb [signed-by=/etc/apt/keyrings/nextdns.gpg] %s/deb stable main\n' "${REPO_BASE_URL}" |
+            asroot tee /etc/apt/sources.list.d/nextdns.list >/dev/null &&
         (dpkg --compare-versions $(dpkg-query --showformat='${Version}' --show apt) ge 1.1 ||
          asroot ln -s /etc/apt/keyrings/nextdns.gpg /etc/apt/trusted.gpg.d/.)
     fi
@@ -1211,7 +1228,7 @@ openssl_get() {
     path=/${host#*/}    # dom.com/path -> /path
     host=${host%$path}  # dom.com/path -> dom.com
     printf "GET %s HTTP/1.0\nHost: %s\nUser-Agent: curl\n\n" "$path" "$host" |
-        openssl s_client -quiet -connect "$host:443" 2>/dev/null
+        openssl s_client -quiet -verify_return_error -connect "$host:443" 2>/dev/null
 }
 
 umask 0022

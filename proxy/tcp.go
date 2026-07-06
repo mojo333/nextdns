@@ -23,6 +23,14 @@ var tcpClientReadTimeout = 10 * time.Second
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := NewTieredBufferPool()
 
+	// Bound the number of concurrently open connections so idle connections
+	// cannot exhaust goroutines/fds independently of the per-query semaphore.
+	maxConns := cap(inflightRequests)
+	if maxConns <= 0 {
+		maxConns = defaultMaxInflightRequests
+	}
+	connLimit := make(chan struct{}, maxConns)
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -31,9 +39,16 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 			}
 			return err
 		}
+		select {
+		case connLimit <- struct{}{}:
+		case <-ctx.Done():
+			c.Close()
+			return ctx.Err()
+		}
 		inflight.Add(1)
 		go func() {
 			defer inflight.Done()
+			defer func() { <-connLimit }()
 			if err := p.serveTCPConn(ctx, c, inflightRequests, bpool); err != nil {
 				if p.ErrorLog != nil {
 					p.ErrorLog(err)
@@ -67,7 +82,18 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		if tcpClientReadTimeout > 0 {
 			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
 		}
-		inflightRequests <- struct{}{}
+		// Re-check after arming the deadline: the watcher may have pushed the
+		// deadline into the past before this SetReadDeadline overwrote it. Any
+		// cancellation from here on is caught by the watcher (past deadline
+		// makes the read below return immediately).
+		if ctx.Err() != nil {
+			return nil
+		}
+		select {
+		case inflightRequests <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
 		buf := *bpool.GetLarge() // Always use large buffer for TCP
 		qsize, err := readTCP(c, buf)
 		_ = c.SetReadDeadline(time.Time{})
@@ -94,9 +120,6 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			localIP := addrIP(c.LocalAddr())
 			remoteIP := addrIP(c.RemoteAddr())
 			q, err := query.New(buf[:qsize], remoteIP, localIP)
-			if err != nil {
-				p.logErr(err)
-			}
 			rbuf := *bpool.GetLarge()
 			defer func() {
 				if r := recover(); r != nil {
@@ -121,12 +144,19 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 					Error:             err,
 				})
 			}()
-			// Derive from the serve context so shutdown cancels in-flight
-			// requests; the timeout bounds them even when Timeout is 0.
-			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
-			defer cancel()
-			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
-				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
+			if err != nil {
+				// Malformed query: reply FormErr rather than forwarding it
+				// upstream.
+				p.logErr(err)
+				rsize = replyRCode(dnsmessage.RCodeFormatError, q, rbuf)
+			} else {
+				// Derive from the serve context so shutdown cancels in-flight
+				// requests; the timeout bounds them even when Timeout is 0.
+				ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
+				defer cancel()
+				if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
+					rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
+				}
 			}
 			werr := writeTCP(c, rbuf[:rsize])
 			if err == nil {

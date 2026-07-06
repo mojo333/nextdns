@@ -146,7 +146,7 @@ func (s ConfigFileStorer) SaveConfig(c map[string]ConfigEntry) error {
 		return fmt.Errorf("%s: not a directory", dir)
 	}
 
-	f, err := os.OpenFile(s.File, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0644)
+	f, err := os.OpenFile(s.File, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}

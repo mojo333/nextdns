@@ -250,7 +250,11 @@ func (r *MDNS) removeOldestEntry() {
 		}
 	}
 	if oldestName != "" {
-		addrs := r.addrs[oldestName].values
+		// r.addrs is keyed by IP address, not by name, so the eviction must
+		// read the addr list from the r.names entry being removed. Reading
+		// r.addrs[oldestName] here always missed, leaving r.addrs to grow
+		// without bound on spoofed mDNS floods.
+		addrs := r.names[oldestName].values
 		delete(r.names, oldestName)
 		for _, addr := range addrs {
 			removeEntry(r.addrs, addr, oldestName)

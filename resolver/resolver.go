@@ -104,5 +104,8 @@ func (r *DNS) Resolve(ctx context.Context, q query.Query, buf []byte) (n int, i 
 }
 
 func (r *DNS) CacheStats() CacheStats {
-	return r.cacheStats
+	return CacheStats{
+		Hit:  atomic.LoadUint32(&r.cacheStats.Hit),
+		Miss: atomic.LoadUint32(&r.cacheStats.Miss),
+	}
 }

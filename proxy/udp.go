@@ -54,7 +54,11 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 	}
 
 	for {
-		inflightRequests <- struct{}{}
+		select {
+		case inflightRequests <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		buf := *bpool.GetLarge() // Use large buffer for UDP (caching compatibility)
 		qsize, lip, raddr, err := readUDP(c, buf)
 		if err != nil {
@@ -78,9 +82,6 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 			var rsize int
 			var ri resolver.ResolveInfo
 			q, err := query.New(buf[:qsize], addrIP(raddr), lip)
-			if err != nil {
-				p.logErr(err)
-			}
 			rbuf := *bpool.GetLarge()
 			defer func() {
 				if r := recover(); r != nil {
@@ -105,12 +106,19 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 					Error:             err,
 				})
 			}()
-			// Derive from the serve context so shutdown cancels in-flight
-			// requests; the timeout bounds them even when Timeout is 0.
-			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
-			defer cancel()
-			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
-				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
+			if err != nil {
+				// Malformed query: reply FormErr rather than forwarding it
+				// upstream.
+				p.logErr(err)
+				rsize = replyRCode(dnsmessage.RCodeFormatError, q, rbuf)
+			} else {
+				// Derive from the serve context so shutdown cancels in-flight
+				// requests; the timeout bounds them even when Timeout is 0.
+				ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
+				defer cancel()
+				if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
+					rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
+				}
 			}
 			if rsize > maxUDPSize && (rsize > int(q.MsgSize) || rsize > maxDNS0Size) {
 				if q.MsgSize > maxUDPSize {

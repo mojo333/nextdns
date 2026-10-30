@@ -39,7 +39,7 @@ GOOS=windows GOARCH=amd64 go build -o /dev/null .
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which cross-compiles linux amd64/arm64/armv7 and freebsd amd64/arm64 with `CGO_ENABLED=0` and `-ldflags "-s -w -X main.version=<tag without v>"`, then attaches tarballs and `SHA256SUMS` to the GitHub release. Those release assets are the production artefacts.
 
-Neither `.goreleaser.yml` nor `.github/actions/goreleaser/` is used by any workflow, because both belong to upstream's packaging pipeline. Binaries are not committed to the repository; the release assets and their `SHA256SUMS` are the only artefacts. Check a downloaded binary with `go version <binary>` and `strings <binary> | grep -x '2\.[0-9]*\.[0-9]*'`. `install-custom.sh` installs from a fork's releases via `CUSTOM_GITHUB_REPO`, and it defaults to upstream when that variable is unset.
+Upstream's GoReleaser packaging (deb, rpm, apk and Homebrew) is not used in this fork and has been removed; it returns with the move back to upstream. Binaries are not committed to the repository; the release assets and their `SHA256SUMS` are the only artefacts. Check a downloaded binary with `go version <binary>` and `strings <binary> | grep -x '2\.[0-9]*\.[0-9]*'`. `nextdns upgrade` deliberately refuses to run, because upstream's installer would replace the fork with upstream's release; upgrades use the fork's releases instead, and `upgrade.go` says how to restore it. `install-custom.sh` installs from a fork's releases via `CUSTOM_GITHUB_REPO`, and it defaults to upstream when that variable is unset.
 
 ## Architecture
 

@@ -1,5 +1,0 @@
-#!/bin/sh
-
-nextdns uninstall
-
-exit 0

@@ -103,6 +103,11 @@ func (r *DNS) Resolve(ctx context.Context, q query.Query, buf []byte) (n int, i 
 	return n, i, err
 }
 
+// CacheStats returns the cache counters. Resolve increments them atomically
+// from many goroutines, so they are read atomically too.
 func (r *DNS) CacheStats() CacheStats {
-	return r.cacheStats
+	return CacheStats{
+		Hit:  atomic.LoadUint32(&r.cacheStats.Hit),
+		Miss: atomic.LoadUint32(&r.cacheStats.Miss),
+	}
 }

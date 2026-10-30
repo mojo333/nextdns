@@ -48,6 +48,7 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 }
 
 func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *BufferPool) error {
+	w := &tcpWriter{c: c}
 	var wg sync.WaitGroup
 	defer func() {
 		// Wait for all query processing goroutines to complete before closing
@@ -96,7 +97,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		// Take the slot only once a whole query has arrived, so an idle
 		// connection never holds one.
 		if !tryAcquireRequest(inflightRequests) {
-			p.rejectTCP(c, buf, qsize, start)
+			p.rejectTCP(c, w, buf, qsize, start)
 			bpool.Put(bp)
 			continue
 		}
@@ -144,7 +145,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
-			werr := writeTCP(c, rbuf[:rsize])
+			werr := w.write(rbuf[:rsize])
 			if err == nil {
 				// Do not overwrite resolve error when on cache fallback.
 				err = werr
@@ -164,24 +165,37 @@ func readTCP(r io.Reader, buf []byte) (int, error) {
 	return io.ReadFull(r, buf[:length])
 }
 
-// writeTCP sends the length prefix and the message in a single Write. Replies
-// for pipelined queries on one connection are written from separate
-// goroutines, and a Go net.Conn never interleaves two Write calls, whereas two
-// writes per reply could put one reply's length in front of another's body.
-func writeTCP(c net.Conn, buf []byte) error {
+// tcpWriter writes the replies for one TCP connection, which come from a
+// separate goroutine per pipelined query.
+type tcpWriter struct {
+	mu sync.Mutex
+	c  net.Conn
+}
+
+// write sends one reply with its length prefix. Writes are serialised so the
+// write deadline, which belongs to the whole connection, cannot be pushed back
+// by the next reply while a client that never reads keeps sending queries. Any
+// failed write closes the connection, so every queued reply fails at once and
+// releases its in-flight slot.
+func (w *tcpWriter) write(buf []byte) error {
 	frame := make([]byte, 2+len(buf))
 	binary.BigEndian.PutUint16(frame, uint16(len(buf)))
 	copy(frame[2:], buf)
-	_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
-	_, err := c.Write(frame)
-	return err
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
+	if _, err := w.c.Write(frame); err != nil {
+		_ = w.c.Close()
+		return err
+	}
+	return nil
 }
 
 // rejectTCP answers a query that found no free in-flight slot and keeps the
 // connection open for the client's next query.
-func (p Proxy) rejectTCP(c net.Conn, buf []byte, qsize int, start time.Time) {
+func (p Proxy) rejectTCP(c net.Conn, w *tcpWriter, buf []byte, qsize int, start time.Time) {
 	q, rsize, err := rejectionReply(buf, qsize, addrIP(c.RemoteAddr()), addrIP(c.LocalAddr()))
-	if werr := writeTCP(c, buf[:rsize]); werr != nil {
+	if werr := w.write(buf[:rsize]); werr != nil {
 		err = fmt.Errorf("%v (write: %w)", err, werr)
 	}
 	p.logRejection("TCP", q, qsize, rsize, start, err)

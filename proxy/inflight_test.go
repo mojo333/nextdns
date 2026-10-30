@@ -164,3 +164,27 @@ func TestServeTCPConn_ClientThatNeverReadsReleasesItsSlot(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestServeTCPConn_ClosesConnectionWhenClientStopsReading(t *testing.T) {
+	// Arrange: a client that keeps sending queries but never reads. Each new
+	// reply used to push the connection's shared write deadline back, so no
+	// write ever timed out and every blocked reply kept its in-flight slot.
+	prev := tcpWriteTimeout
+	tcpWriteTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tcpWriteTimeout = prev })
+	client := startTCPConn(t, Proxy{Upstream: &mockSlowResolver{}}, make(chan struct{}, 1000))
+	frame := append(binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery))), exampleQuery...)
+
+	// Act and Assert: the server gives up on the connection, so sends fail.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_ = client.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, err := client.Write(frame); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("connection still open 2s after the client stopped reading replies")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

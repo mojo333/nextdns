@@ -20,6 +20,10 @@ const maxTCPSize = 65535
 
 var tcpClientReadTimeout = 10 * time.Second
 
+// tcpWriteTimeout bounds each reply write, so a client that stops reading
+// cannot hold a reply goroutine and its in-flight slot forever.
+var tcpWriteTimeout = 10 * time.Second
+
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := NewBufferPool()
 
@@ -168,6 +172,7 @@ func writeTCP(c net.Conn, buf []byte) error {
 	frame := make([]byte, 2+len(buf))
 	binary.BigEndian.PutUint16(frame, uint16(len(buf)))
 	copy(frame[2:], buf)
+	_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
 	_, err := c.Write(frame)
 	return err
 }

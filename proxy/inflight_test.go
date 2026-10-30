@@ -3,7 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/binary"
-	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -81,28 +81,59 @@ func TestServeTCPConn_ReturnsPromptlyWhenContextCancelled(t *testing.T) {
 	}
 }
 
-func TestServeTCPConn_RefusesWhenNoSlotIsFree(t *testing.T) {
-	// Arrange
+// startTCPConn serves one TCP connection and, at the end of the test, closes
+// the client and waits for the handler to return. A handler left running
+// would race with tests that change tcpClientReadTimeout.
+func startTCPConn(t *testing.T, p Proxy, inflightRequests chan struct{}) net.Conn {
+	t.Helper()
 	server, client := net.Pipe()
-	defer client.Close()
-	errC := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
-		errC <- (Proxy{}).serveTCPConn(context.Background(), server, fullInflight(), NewBufferPool())
+		defer close(done)
+		_ = p.serveTCPConn(context.Background(), server, inflightRequests, NewBufferPool())
 	}()
+	t.Cleanup(func() {
+		client.Close()
+		<-done
+	})
+	return client
+}
 
-	// Act: the connection is refused before the query is even read.
-	go func() {
-		frame := binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery)))
-		_, _ = client.Write(append(frame, exampleQuery...))
-	}()
+func TestServeTCPConn_AnswersServfailWhenNoSlotIsFree(t *testing.T) {
+	// Arrange
+	client := startTCPConn(t, Proxy{}, fullInflight())
 
-	// Assert
-	select {
-	case err := <-errC:
-		if !errors.Is(err, errTooManyInflightRequests) {
-			t.Fatalf("serveTCPConn() err = %v, want errTooManyInflightRequests", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("serveTCPConn blocked waiting for an in-flight slot")
+	// Act
+	frame := binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery)))
+	go func() { _, _ = client.Write(append(frame, exampleQuery...)) }()
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var length uint16
+	err := binary.Read(client, binary.BigEndian, &length)
+
+	// Assert: the query is answered at once, as on UDP, rather than blocking.
+	if err != nil {
+		t.Fatalf("no reply while every in-flight slot was taken: %v", err)
+	}
+	reply := make([]byte, length)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatal(err)
+	}
+	if binary.BigEndian.Uint16(reply) != 0x1234 || reply[3]&0x0f != 2 {
+		t.Fatalf("reply = %x, want SERVFAIL for ID 1234", reply)
+	}
+}
+
+func TestServeTCPConn_IdleConnectionHoldsNoSlot(t *testing.T) {
+	// Arrange: a client that connects and sends nothing.
+	inflightRequests := make(chan struct{}, 1)
+	startTCPConn(t, Proxy{}, inflightRequests)
+
+	// Act
+	time.Sleep(100 * time.Millisecond)
+
+	// Assert: otherwise a few idle connections could hold every slot for the
+	// whole idle timeout and turn all UDP queries into SERVFAIL.
+	if n := len(inflightRequests); n != 0 {
+		t.Fatalf("idle connection holds %d in-flight slot(s), want 0", n)
 	}
 }

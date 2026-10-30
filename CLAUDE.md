@@ -20,9 +20,10 @@ go test ./resolver/query/ -run TestName -v     # single test
 go vet ./...
 staticcheck $(go list ./... | grep -v internal/dnsmessage)   # as CI runs it
 golangci-lint run ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...   # as CI runs it
 ```
 
-Neither `staticcheck` nor `golangci-lint` is installed on this machine. CI runs both on every PR (`.github/workflows/staticcheck.yml` per GOOS for darwin and linux, and `golangci-lint.yml`).
+Neither `staticcheck` nor `golangci-lint` is installed on this machine. CI runs both on every PR (`.github/workflows/staticcheck.yml` per GOOS for darwin and linux, and `golangci-lint.yml`). `govulncheck.yml` runs on every PR, on pushes to `master` and weekly. The `go` directive in `go.mod` is what pins the release toolchain, so a failing standard library finding is fixed by raising that directive to the patched Go release, not by changing code. Run govulncheck locally with `GOTOOLCHAIN` set to that exact version, because a newer local Go hides standard library findings.
 
 Much of the code is split by platform using filename suffixes (`_linux.go`, `_bsd.go`, `_windows.go`, `_other.go`), so a change in `host/`, `router/`, `discovery/` or `ctl/` should be checked for the targets that actually ship:
 

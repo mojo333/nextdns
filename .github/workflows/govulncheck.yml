@@ -1,0 +1,26 @@
+name: govulncheck
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # New advisories are published against code that has not changed, so scan
+  # on a schedule as well as on every change.
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The go directive pins the toolchain the release workflow builds with,
+      # so standard library findings here match what ships.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

@@ -249,8 +249,6 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 // shows up as a mismatch.
 func TestTCPConn_PipelinedRepliesAreNotInterleaved(t *testing.T) {
 	const queries = 50
-	server, client := net.Pipe()
-	defer client.Close()
 
 	var arrived sync.WaitGroup
 	arrived.Add(queries)
@@ -271,9 +269,7 @@ func TestTCPConn_PipelinedRepliesAreNotInterleaved(t *testing.T) {
 		},
 		Timeout: 5 * time.Second,
 	}
-	go func() {
-		_ = p.serveTCPConn(context.Background(), server, make(chan struct{}, queries), NewBufferPool())
-	}()
+	client := startTCPConn(t, p, make(chan struct{}, queries))
 
 	for id := 1; id <= queries; id++ {
 		q := []byte{

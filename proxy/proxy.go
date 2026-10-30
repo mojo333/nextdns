@@ -274,3 +274,27 @@ func (p Proxy) logErr(err error) {
 		p.ErrorLog(err)
 	}
 }
+
+// rejectionReply writes into buf the reply for a query that found no free
+// in-flight slot: SERVFAIL, or FORMERR when the query cannot be parsed. It
+// answers at once so the client can retry instead of waiting for its timeout.
+func rejectionReply(buf []byte, qsize int, peerIP, localIP net.IP) (query.Query, int, error) {
+	q, parseErr := query.New(buf[:qsize], peerIP, localIP)
+	if parseErr != nil {
+		return q, replyRCode(dnsmessage.RCodeFormatError, q, buf), parseErr
+	}
+	return q, replyRCode(dnsmessage.RCodeServerFailure, q, buf), errTooManyInflightRequests
+}
+
+func (p Proxy) logRejection(protocol string, q query.Query, qsize, rsize int, start time.Time, err error) {
+	p.logQuery(QueryInfo{
+		PeerIP:       q.PeerIP,
+		Protocol:     protocol,
+		Type:         q.Type.String(),
+		Name:         q.Name,
+		QuerySize:    qsize,
+		ResponseSize: rsize,
+		Duration:     time.Since(start),
+		Error:        err,
+	})
+}

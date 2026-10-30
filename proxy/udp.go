@@ -135,31 +135,13 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 	}
 }
 
-// rejectUDP answers a query that found no free in-flight slot with SERVFAIL,
-// or FORMERR when it cannot be parsed, so the client can retry instead of
-// waiting for its own timeout.
+// rejectUDP answers a query that found no free in-flight slot.
 func (p Proxy) rejectUDP(c *net.UDPConn, buf []byte, qsize int, lip net.IP, raddr *net.UDPAddr, start time.Time) {
-	q, parseErr := query.New(buf[:qsize], addrIP(raddr), lip)
-	err := errTooManyInflightRequests
-	rcode := dnsmessage.RCodeServerFailure
-	if parseErr != nil {
-		err = parseErr
-		rcode = dnsmessage.RCodeFormatError
-	}
-	rsize := replyRCode(rcode, q, buf)
+	q, rsize, err := rejectionReply(buf, qsize, addrIP(raddr), lip)
 	if _, _, werr := c.WriteMsgUDP(buf[:rsize], oobWithSrc(lip), raddr); werr != nil {
 		err = fmt.Errorf("%v (write: %w)", err, werr)
 	}
-	p.logQuery(QueryInfo{
-		PeerIP:       q.PeerIP,
-		Protocol:     "UDP",
-		Type:         q.Type.String(),
-		Name:         q.Name,
-		QuerySize:    qsize,
-		ResponseSize: rsize,
-		Duration:     time.Since(start),
-		Error:        err,
-	})
+	p.logRejection("UDP", q, qsize, rsize, start, err)
 }
 
 // readUDP reads from c to buf and returns the local and remote addresses.

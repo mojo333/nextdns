@@ -73,18 +73,12 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		if ctx.Err() != nil {
 			return nil
 		}
-		if !tryAcquireRequest(inflightRequests) {
-			// Closing lets the client retry; replies already in flight on this
-			// connection are still written before the deferred close.
-			return errTooManyInflightRequests
-		}
 		bp := bpool.Get()
 		buf := *bp
 		qsize, err := readTCP(c, buf)
 		_ = c.SetReadDeadline(time.Time{})
 		if err != nil {
 			bpool.Put(bp)
-			<-inflightRequests
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -92,10 +86,16 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		}
 		if qsize <= 14 {
 			bpool.Put(bp)
-			<-inflightRequests
 			return fmt.Errorf("query too small: %d", qsize)
 		}
 		start := time.Now()
+		// Take the slot only once a whole query has arrived, so an idle
+		// connection never holds one.
+		if !tryAcquireRequest(inflightRequests) {
+			p.rejectTCP(c, buf, qsize, start)
+			bpool.Put(bp)
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -170,4 +170,14 @@ func writeTCP(c net.Conn, buf []byte) error {
 	copy(frame[2:], buf)
 	_, err := c.Write(frame)
 	return err
+}
+
+// rejectTCP answers a query that found no free in-flight slot and keeps the
+// connection open for the client's next query.
+func (p Proxy) rejectTCP(c net.Conn, buf []byte, qsize int, start time.Time) {
+	q, rsize, err := rejectionReply(buf, qsize, addrIP(c.RemoteAddr()), addrIP(c.LocalAddr()))
+	if werr := writeTCP(c, buf[:rsize]); werr != nil {
+		err = fmt.Errorf("%v (write: %w)", err, werr)
+	}
+	p.logRejection("TCP", q, qsize, rsize, start, err)
 }

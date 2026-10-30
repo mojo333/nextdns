@@ -21,7 +21,7 @@ const maxTCPSize = 65535
 var tcpClientReadTimeout = 10 * time.Second
 
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
-	bpool := NewTieredBufferPool()
+	bpool := NewBufferPool()
 
 	for {
 		c, err := l.Accept()
@@ -43,7 +43,7 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 	}
 }
 
-func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *TieredBufferPool) error {
+func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *BufferPool) error {
 	var wg sync.WaitGroup
 	defer func() {
 		// Wait for all query processing goroutines to complete before closing
@@ -68,11 +68,12 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
 		}
 		inflightRequests <- struct{}{}
-		buf := *bpool.GetLarge() // Always use large buffer for TCP
+		bp := bpool.Get()
+		buf := *bp
 		qsize, err := readTCP(c, buf)
 		_ = c.SetReadDeadline(time.Time{})
 		if err != nil {
-			bpool.Put(&buf)
+			bpool.Put(bp)
 			<-inflightRequests
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -80,7 +81,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			return fmt.Errorf("TCP read: %v", err)
 		}
 		if qsize <= 14 {
-			bpool.Put(&buf)
+			bpool.Put(bp)
 			<-inflightRequests
 			return fmt.Errorf("query too small: %d", qsize)
 		}
@@ -97,15 +98,16 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if err != nil {
 				p.logErr(err)
 			}
-			rbuf := *bpool.GetLarge()
+			rbp := bpool.Get()
+			rbuf := *rbp
 			defer func() {
 				if r := recover(); r != nil {
 					stackBuf := make([]byte, 64<<10)
 					stackBuf = stackBuf[:runtime.Stack(stackBuf, false)]
 					err = fmt.Errorf("panic: %v: %s", r, string(stackBuf))
 				}
-				bpool.Put(&buf)
-				bpool.Put(&rbuf)
+				bpool.Put(bp)
+				bpool.Put(rbp)
 				<-inflightRequests
 				p.logQuery(QueryInfo{
 					PeerIP:            q.PeerIP,

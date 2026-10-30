@@ -41,7 +41,7 @@ func TestServeTCPConn_IdleReadTimeout(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
 
-	bpool := NewTieredBufferPool()
+	bpool := NewBufferPool()
 	inflightRequests := make(chan struct{}, 1)
 	errC := make(chan error, 1)
 
@@ -107,7 +107,7 @@ func TestTCPConn_WaitsForInflightQueries(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewTieredBufferPool()
+		bpool := NewBufferPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
@@ -199,7 +199,7 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewTieredBufferPool()
+		bpool := NewBufferPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
@@ -272,7 +272,7 @@ func TestTCPConn_PipelinedRepliesAreNotInterleaved(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 	go func() {
-		_ = p.serveTCPConn(context.Background(), server, make(chan struct{}, queries), NewTieredBufferPool())
+		_ = p.serveTCPConn(context.Background(), server, make(chan struct{}, queries), NewBufferPool())
 	}()
 
 	for id := 1; id <= queries; id++ {
@@ -339,7 +339,7 @@ func TestTCPConn_GracefulShutdown(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewTieredBufferPool()
+		bpool := NewBufferPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 		close(serverDone)
 	}()

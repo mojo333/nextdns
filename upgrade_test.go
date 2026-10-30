@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+func TestUpgradeRefusesAndPointsToForkReleases(t *testing.T) {
+	// upgrade must not run upstream's installer, which would replace this fork
+	// with upstream's release.
+	err := upgrade(nil)
+	if err == nil {
+		t.Fatal("upgrade() err = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), forkReleasesURL) {
+		t.Fatalf("upgrade() err = %q, want it to mention %s", err, forkReleasesURL)
+	}
+}
+
 func TestFetchInstallerScriptReturnsBody(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

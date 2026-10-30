@@ -22,8 +22,15 @@ const (
 	maxInstallerScriptSize = 1 << 20 // 1 MiB
 )
 
+// forkReleasesURL is where this fork's verified release binaries are published.
+const forkReleasesURL = "https://github.com/mojo333/nextdns/releases"
+
+// upgrade refuses to self-upgrade. The upstream installer behind installer()
+// installs upstream's release, which would silently replace this fork, so
+// upgrades are done from the fork's releases instead. Restore
+// installer("upgrade") when production moves back to upstream.
 func upgrade(args []string) error {
-	return installer("upgrade")
+	return fmt.Errorf("self-upgrade is disabled in this fork because the upstream installer would replace it; download a release from %s", forkReleasesURL)
 }
 
 func installer(cmd string) error {

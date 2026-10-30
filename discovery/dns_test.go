@@ -9,10 +9,10 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-// TestDiscoveryDNS_IDMismatch_MaxRetries tests that DNS ID mismatch
-// respects the maxRetries limit to prevent DoS via infinite loops.
-// This is a regression test for the DoS fix in commit f465500.
-func TestDiscoveryDNS_IDMismatch_MaxRetries(t *testing.T) {
+// TestDiscoveryDNS_ValidAnswerAfterManyMismatches checks that six wrong-ID
+// responses, as spoofed packets would be, do not fail the query before the
+// real answer arrives. The 100ms read deadline is what bounds the loop.
+func TestDiscoveryDNS_ValidAnswerAfterManyMismatches(t *testing.T) {
 	// Create a mock DNS server that sends multiple mismatched-ID responses
 	// per query (simulating stale responses on the same UDP socket).
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -43,41 +43,21 @@ func TestDiscoveryDNS_IDMismatch_MaxRetries(t *testing.T) {
 
 			requestID := uint16(buf[0])<<8 | uint16(buf[1])
 
-			// Send 6 responses with wrong IDs (maxRetries is 5)
 			for i := 0; i < 6; i++ {
 				resp := buildMinimalDNSResponse(requestID+uint16(i+1), buf[:n])
 				conn.WriteToUDP(resp, clientAddr)
 			}
+			conn.WriteToUDP(buildMinimalDNSResponse(requestID, buf[:n]), clientAddr)
 		}
 	}()
 
-	// Attempt a PTR query - should fail after maxRetries
-	start := time.Now()
-	names, err := queryPTR(addr, net.ParseIP("192.168.1.1"), false)
-	duration := time.Since(start)
-
-	// Should return error due to max retries
-	if err == nil {
-		t.Error("Expected error due to max retries, got nil")
-	}
-
-	if err != nil && err.Error() != "max retries exceeded: DNS ID mismatch" {
-		t.Errorf("Expected 'max retries exceeded' error, got: %v", err)
-	}
-
-	// Should have no results
-	if len(names) > 0 {
-		t.Errorf("Expected no results, got %d names", len(names))
-	}
-
-	// Verify it didn't take too long (should fail fast, not infinite loop)
-	if duration > 10*time.Second {
-		t.Errorf("Query took too long (%v), possible infinite loop", duration)
+	if _, err := queryPTR(addr, net.ParseIP("192.168.1.1"), false); err != nil {
+		t.Fatalf("queryPTR after six mismatched IDs: %v, want the valid answer", err)
 	}
 }
 
-// TestDiscoveryDNS_DoSProtection verifies protection against DoS attacks
-// via malicious DNS responses with mismatched IDs.
+// TestDiscoveryDNS_DoSProtection checks that a flood of mismatched IDs with no
+// valid answer still ends each query at its read deadline.
 func TestDiscoveryDNS_DoSProtection(t *testing.T) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {

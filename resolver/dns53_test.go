@@ -253,9 +253,10 @@ func TestDNS53_Resolve_IDMismatch(t *testing.T) {
 	}
 }
 
-func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
-	// Custom UDP server that sends 6 wrong-ID responses to a single query.
-	// maxRetries in DNS53.resolve is 5, so this should trigger the limit.
+func TestDNS53_Resolve_ValidAnswerAfterManyMismatches(t *testing.T) {
+	// Six wrong-ID responses, as spoofed packets would be, must not fail the
+	// query early: the real answer that follows is still accepted. The read
+	// deadline from the context is what bounds the loop.
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +285,8 @@ func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
 				net.ParseIP("1.2.3.4"), 300)
 			conn.WriteToUDP(resp, clientAddr)
 		}
+		resp, _ := testutil.NewTestResponse(h.ID, q.Name.String(), net.ParseIP("1.2.3.4"), 300)
+		conn.WriteToUDP(resp, clientAddr)
 	}()
 
 	r := DNS53{}
@@ -293,19 +296,14 @@ func TestDNS53_Resolve_IDMismatchMaxRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, _, err = r.resolve(ctx, q, buf, addr)
-	if err == nil {
-		t.Error("expected max retries error")
-	}
-
-	if err.Error() != "max retries exceeded: DNS ID mismatch" {
-		t.Errorf("unexpected error: %v", err)
+	if _, _, err = r.resolve(ctx, q, buf, addr); err != nil {
+		t.Fatalf("resolve after six mismatched IDs: %v, want the valid answer", err)
 	}
 }
 
 func TestDNS53_Resolve_ShortResponse(t *testing.T) {
 	// Custom UDP server that sends 6 too-short responses to a single query.
-	// maxRetries in DNS53.resolve is 5, so this should trigger the limit.
+	// With no valid answer the query must still end, at its context deadline.
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -332,13 +330,13 @@ func TestDNS53_Resolve_ShortResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
+	start := time.Now()
 	_, _, err = r.resolve(ctx, q, buf, addr)
 	if err == nil {
-		t.Error("expected error for short responses")
+		t.Error("expected an error when only short responses arrive")
 	}
-
-	if err.Error() != "max retries exceeded waiting for valid response" {
-		t.Errorf("unexpected error: %v", err)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("resolve took %v, want it bounded by the 500ms deadline", elapsed)
 	}
 }
 

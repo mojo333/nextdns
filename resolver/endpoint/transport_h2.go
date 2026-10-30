@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"runtime"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 			ServerName:         e.Hostname,
 			RootCAs:            getRootCAs(),
 			ClientSessionCache: tls.NewLRUClientSessionCache(0),
-			MinVersion: tls.VersionTLS13,
+			MinVersion:         tls.VersionTLS13,
 		},
 		DialContext: func(ctx context.Context, network, _ string) (c net.Conn, err error) {
 			c, err = d.DialParallel(ctx, network, addrs)
@@ -47,11 +48,16 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 		ForceAttemptHTTP2: true,
 		IdleConnTimeout:   90 * time.Second,
 	}
-	if e.onConnect != nil {
-		t = roundTripperConnectTracer{
-			RoundTripper: t,
-			OnConnect:    e.onConnect,
-		}
+	runtime.SetFinalizer(t, func(t *http.Transport) {
+		t.CloseIdleConnections()
+	})
+	t = roundTripperConnectTracer{
+		RoundTripper: t,
+		OnConnect: func(ci *ConnectInfo) {
+			if onConnect := e.getOnConnect(); onConnect != nil {
+				onConnect(ci)
+			}
+		},
 	}
 	return t
 }

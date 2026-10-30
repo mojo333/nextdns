@@ -137,3 +137,30 @@ func TestServeTCPConn_IdleConnectionHoldsNoSlot(t *testing.T) {
 		t.Fatalf("idle connection holds %d in-flight slot(s), want 0", n)
 	}
 }
+
+func TestServeTCPConn_ClientThatNeverReadsReleasesItsSlot(t *testing.T) {
+	// Arrange: replies are written with a deadline, so a client that sends a
+	// query and never reads cannot keep the reply goroutine, and its in-flight
+	// slot, forever. Enough such queries would otherwise hold every slot.
+	prev := tcpWriteTimeout
+	tcpWriteTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tcpWriteTimeout = prev })
+	inflightRequests := make(chan struct{}, 1)
+	p := Proxy{Upstream: &mockSlowResolver{}}
+	client := startTCPConn(t, p, inflightRequests)
+
+	// Act
+	frame := binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery)))
+	if _, err := client.Write(append(frame, exampleQuery...)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert
+	deadline := time.Now().Add(2 * time.Second)
+	for len(inflightRequests) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("in-flight slot still held 2s after the client stopped reading")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

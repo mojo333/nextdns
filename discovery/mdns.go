@@ -250,7 +250,7 @@ func (r *MDNS) removeOldestEntry() {
 		}
 	}
 	if oldestName != "" {
-		addrs := r.addrs[oldestName].values
+		addrs := r.names[oldestName].values
 		delete(r.names, oldestName)
 		for _, addr := range addrs {
 			removeEntry(r.addrs, addr, oldestName)

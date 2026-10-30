@@ -6,8 +6,12 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nextdns/nextdns/resolver"
+	"github.com/nextdns/nextdns/resolver/query"
 )
 
 var exampleQuery = []byte{
@@ -186,5 +190,59 @@ func TestServeTCPConn_ClosesConnectionWhenClientStopsReading(t *testing.T) {
 			t.Fatal("connection still open 2s after the client stopped reading replies")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestServeTCPConn_ReleasesSlotsWhileRepliesWaitToBeWritten(t *testing.T) {
+	// Arrange: a client that pipelines queries and does not read yet. Slots
+	// bound upstream work, so a reply waiting for a slow reader must not hold
+	// one, or a trickle-reading client could keep many slots for minutes.
+	inflightRequests := make(chan struct{}, 100)
+	client := startTCPConn(t, Proxy{Upstream: &mockSlowResolver{}}, inflightRequests)
+	frame := append(binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery))), exampleQuery...)
+
+	// Act
+	for i := 0; i < 10; i++ {
+		if _, err := client.Write(frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Assert
+	deadline := time.Now().Add(2 * time.Second)
+	for len(inflightRequests) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d in-flight slots held by replies waiting to be written", len(inflightRequests))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestServeTCPConn_CapsPipelinedQueriesPerConnection(t *testing.T) {
+	// Arrange: a client that pipelines far more queries than the cap and never
+	// reads. Without a cap each would park a goroutine and two 64KB buffers.
+	var resolved atomic.Int32
+	p := Proxy{Upstream: &mockSlowResolver{
+		resolveFunc: func(ctx context.Context, q query.Query, buf []byte) (int, resolver.ResolveInfo, error) {
+			resolved.Add(1)
+			return 12, resolver.ResolveInfo{}, nil
+		},
+	}}
+	client := startTCPConn(t, p, make(chan struct{}, 1000))
+	frame := append(binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery))), exampleQuery...)
+
+	// Act: writes block once the server stops reading this connection.
+	go func() {
+		for i := 0; i < 10*maxTCPPipelinedQueries; i++ {
+			if _, err := client.Write(frame); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(300 * time.Millisecond)
+
+	// Assert
+	if got := resolved.Load(); got > maxTCPPipelinedQueries {
+		t.Fatalf("%d queries accepted from a client that never reads, want at most %d", got, maxTCPPipelinedQueries)
 	}
 }

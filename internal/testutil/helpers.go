@@ -2,13 +2,8 @@ package testutil
 
 import (
 	"context"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"runtime"
 	"sync"
-	"testing"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -16,17 +11,17 @@ import (
 
 // MockDNSServer provides a mock DNS server for testing (UDP and TCP).
 type MockDNSServer struct {
-	Addr       string
-	UDPAddr    *net.UDPAddr
-	TCPAddr    *net.TCPAddr
-	Handler    func([]byte) []byte
-	udpConn    *net.UDPConn
-	tcpLn      net.Listener
-	mu         sync.Mutex
-	queries    [][]byte
-	closeOnce  sync.Once
-	ctx        context.Context
-	cancel     context.CancelFunc
+	Addr      string
+	UDPAddr   *net.UDPAddr
+	TCPAddr   *net.TCPAddr
+	Handler   func([]byte) []byte
+	udpConn   *net.UDPConn
+	tcpLn     net.Listener
+	mu        sync.Mutex
+	queries   [][]byte
+	closeOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewMockDNSServer creates a new mock DNS server.
@@ -187,67 +182,6 @@ func (s *MockDNSServer) Close() error {
 	return nil
 }
 
-// MockDoHServer provides a mock DNS-over-HTTPS server.
-type MockDoHServer struct {
-	*httptest.Server
-	Handler func([]byte) []byte
-	mu      sync.Mutex
-	queries [][]byte
-}
-
-// NewMockDoHServer creates a new mock DoH server.
-func NewMockDoHServer(handler func([]byte) []byte) *MockDoHServer {
-	s := &MockDoHServer{
-		Handler: handler,
-	}
-	s.Server = httptest.NewServer(http.HandlerFunc(s.handleRequest))
-	return s
-}
-
-func (s *MockDoHServer) handleRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	buf := make([]byte, 4096)
-	n, err := r.Body.Read(buf)
-	if err != nil && n == 0 {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	query := make([]byte, n)
-	copy(query, buf[:n])
-	s.recordQuery(query)
-
-	if s.Handler != nil {
-		resp := s.Handler(query)
-		if resp != nil {
-			w.Header().Set("Content-Type", "application/dns-message")
-			w.Write(resp)
-			return
-		}
-	}
-
-	http.Error(w, "internal error", http.StatusInternalServerError)
-}
-
-func (s *MockDoHServer) recordQuery(q []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.queries = append(s.queries, q)
-}
-
-// Queries returns all received queries.
-func (s *MockDoHServer) Queries() [][]byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	result := make([][]byte, len(s.queries))
-	copy(result, s.queries)
-	return result
-}
-
 // DNSMessageBuilder helps build DNS messages for testing.
 type DNSMessageBuilder struct {
 	msg dnsmessage.Message
@@ -325,62 +259,6 @@ func (b *DNSMessageBuilder) Build() ([]byte, error) {
 	return b.msg.Pack()
 }
 
-// CheckGoroutineLeak checks for goroutine leaks during test.
-func CheckGoroutineLeak(t *testing.T) func() {
-	before := runtime.NumGoroutine()
-	return func() {
-		// Wait a bit for goroutines to exit
-		time.Sleep(100 * time.Millisecond)
-		after := runtime.NumGoroutine()
-		if after > before+5 { // Allow some tolerance
-			t.Errorf("Potential goroutine leak: before=%d, after=%d", before, after)
-		}
-	}
-}
-
-// CheckContextCancelled checks if context was properly cancelled.
-func CheckContextCancelled(t *testing.T, ctx context.Context, timeout time.Duration) {
-	select {
-	case <-ctx.Done():
-		// Expected
-	case <-time.After(timeout):
-		t.Error("Context was not cancelled within timeout")
-	}
-}
-
-// WaitForCondition waits for a condition to be true or times out.
-func WaitForCondition(t *testing.T, condition func() bool, timeout time.Duration, msg string) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("Timeout waiting for condition: %s", msg)
-}
-
-// AssertNoError fails the test if err is not nil.
-func AssertNoError(t *testing.T, err error, msg string) {
-	if err != nil {
-		t.Fatalf("%s: %v", msg, err)
-	}
-}
-
-// AssertError fails the test if err is nil.
-func AssertError(t *testing.T, err error, msg string) {
-	if err == nil {
-		t.Fatalf("%s: expected error but got nil", msg)
-	}
-}
-
-// AssertEqual fails if expected != actual.
-func AssertEqual(t *testing.T, expected, actual interface{}, msg string) {
-	if expected != actual {
-		t.Fatalf("%s: expected %v, got %v", msg, expected, actual)
-	}
-}
-
 // NewTestQuery creates a test DNS query message.
 func NewTestQuery(id uint16, name string, qtype dnsmessage.Type) ([]byte, error) {
 	return NewDNSMessageBuilder().
@@ -417,29 +295,6 @@ func SimpleDNSHandler(ip net.IP) func([]byte) []byte {
 	}
 }
 
-// ErrorDNSHandler creates a DNS handler that returns a specific error code.
-func ErrorDNSHandler(rcode dnsmessage.RCode) func([]byte) []byte {
-	return func(query []byte) []byte {
-		var p dnsmessage.Parser
-		h, err := p.Start(query)
-		if err != nil {
-			return nil
-		}
-		q, err := p.Question()
-		if err != nil {
-			return nil
-		}
-
-		resp, _ := NewDNSMessageBuilder().
-			SetID(h.ID).
-			SetResponse().
-			SetRCode(rcode).
-			AddQuestion(q.Name.String(), q.Type).
-			Build()
-		return resp
-	}
-}
-
 // CountingHandler wraps a handler and counts calls.
 type CountingHandler struct {
 	Handler func([]byte) []byte
@@ -467,30 +322,4 @@ func (h *CountingHandler) Count() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.count
-}
-
-// Reset resets the counter.
-func (h *CountingHandler) Reset() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.count = 0
-}
-
-// TestAddr returns a test address for the given port.
-func TestAddr(port int) string {
-	return fmt.Sprintf("127.0.0.1:%d", port)
-}
-
-// GetFreePort finds a free port for testing.
-func GetFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }

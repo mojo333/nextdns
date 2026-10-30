@@ -67,7 +67,11 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		if tcpClientReadTimeout > 0 {
 			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
 		}
-		inflightRequests <- struct{}{}
+		if !tryAcquireRequest(inflightRequests) {
+			// Closing lets the client retry; replies already in flight on this
+			// connection are still written before the deferred close.
+			return errTooManyInflightRequests
+		}
 		bp := bpool.Get()
 		buf := *bp
 		qsize, err := readTCP(c, buf)

@@ -78,6 +78,21 @@ type Proxy struct {
 
 const defaultMaxInflightRequests = 256
 
+// errTooManyInflightRequests is returned when every in-flight slot is taken.
+var errTooManyInflightRequests = errors.New("too many inflight requests")
+
+// tryAcquireRequest takes an in-flight slot without waiting. Waiting would stop
+// the read loops, so one slow upstream holding every slot would stall all
+// queries, including those the cache could answer at once.
+func tryAcquireRequest(inflightRequests chan struct{}) bool {
+	select {
+	case inflightRequests <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 // defaultRequestTimeout bounds request handling when Timeout is left unset
 // (or set to 0) so a hung upstream can never pin an inflight slot forever.
 const defaultRequestTimeout = 5 * time.Second

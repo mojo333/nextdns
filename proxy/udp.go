@@ -54,24 +54,26 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 	}
 
 	for {
-		inflightRequests <- struct{}{}
 		bp := bpool.Get()
 		buf := *bp
 		qsize, lip, raddr, err := readUDP(c, buf)
 		if err != nil {
-			<-inflightRequests
+			bpool.Put(bp)
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				bpool.Put(bp)
 				continue
 			}
 			return err
 		}
 		if qsize <= 14 {
 			bpool.Put(bp)
-			<-inflightRequests
 			continue
 		}
 		start := time.Now()
+		if !tryAcquireRequest(inflightRequests) {
+			p.rejectUDP(c, buf, qsize, lip, raddr, start)
+			bpool.Put(bp)
+			continue
+		}
 		inflight.Add(1)
 		go func() {
 			defer inflight.Done()
@@ -131,6 +133,33 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 			}
 		}()
 	}
+}
+
+// rejectUDP answers a query that found no free in-flight slot with SERVFAIL,
+// or FORMERR when it cannot be parsed, so the client can retry instead of
+// waiting for its own timeout.
+func (p Proxy) rejectUDP(c *net.UDPConn, buf []byte, qsize int, lip net.IP, raddr *net.UDPAddr, start time.Time) {
+	q, parseErr := query.New(buf[:qsize], addrIP(raddr), lip)
+	err := errTooManyInflightRequests
+	rcode := dnsmessage.RCodeServerFailure
+	if parseErr != nil {
+		err = parseErr
+		rcode = dnsmessage.RCodeFormatError
+	}
+	rsize := replyRCode(rcode, q, buf)
+	if _, _, werr := c.WriteMsgUDP(buf[:rsize], oobWithSrc(lip), raddr); werr != nil {
+		err = fmt.Errorf("%v (write: %w)", err, werr)
+	}
+	p.logQuery(QueryInfo{
+		PeerIP:       q.PeerIP,
+		Protocol:     "UDP",
+		Type:         q.Type.String(),
+		Name:         q.Name,
+		QuerySize:    qsize,
+		ResponseSize: rsize,
+		Duration:     time.Since(start),
+		Error:        err,
+	})
 }
 
 // readUDP reads from c to buf and returns the local and remote addresses.

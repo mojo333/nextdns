@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -42,9 +43,14 @@ func RunOutput(command string, args ...string) (out string, err error) {
 	if err = cmd.Start(); err != nil {
 		return
 	}
-	go copy(&stdout, stdoutPipe)
-	go copy(&stderr, stderrPipe)
+	var copies sync.WaitGroup
+	copies.Go(func() { copy(&stdout, stdoutPipe) })
+	copies.Go(func() { copy(&stderr, stderrPipe) })
 	err = cmd.Wait()
+	// Wait closes the read side of both pipes, so the copies always return even
+	// if a forked daemon still holds the write side. Join them before reading
+	// the buffers, which they would otherwise still be writing to.
+	copies.Wait()
 	out = strings.TrimSpace(stdout.String())
 	return
 }

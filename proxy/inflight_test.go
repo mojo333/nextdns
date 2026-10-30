@@ -59,6 +59,28 @@ func TestServeUDP_AnswersServfailWhenNoSlotIsFree(t *testing.T) {
 	}
 }
 
+func TestServeTCPConn_ReturnsPromptlyWhenContextCancelled(t *testing.T) {
+	// The shutdown watcher sets an immediate read deadline, but the read loop
+	// sets its own idle deadline each iteration and could overwrite it, leaving
+	// shutdown to wait for the full idle timeout.
+	for i := 0; i < 20; i++ {
+		server, client := net.Pipe()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		errC := make(chan error, 1)
+		go func() {
+			errC <- (Proxy{}).serveTCPConn(ctx, server, make(chan struct{}, 1), NewBufferPool())
+		}()
+		select {
+		case <-errC:
+		case <-time.After(time.Second):
+			client.Close()
+			t.Fatalf("run %d: serveTCPConn still reading 1s after its context was cancelled", i)
+		}
+		client.Close()
+	}
+}
+
 func TestServeTCPConn_RefusesWhenNoSlotIsFree(t *testing.T) {
 	// Arrange
 	server, client := net.Pipe()

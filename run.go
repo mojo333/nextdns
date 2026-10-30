@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -247,8 +246,7 @@ func run(args []string) error {
 		})
 	}
 
-	var startupUnix atomic.Int64
-	startupUnix.Store(time.Now().UnixNano())
+	fallback := newFallbackWindow(10 * time.Minute)
 	p.resolver = &resolver.DNS{
 		DOH: resolver.DOH{
 			ExtraHeaders: http.Header{
@@ -264,8 +262,7 @@ func run(args []string) error {
 			}
 			// Allow fallback to plain DNS for 10 minute after startup or after
 			// a change of network configuration.
-			startup := time.Unix(0, startupUnix.Load())
-			return time.Since(startup) < 10*time.Minute
+			return fallback.open()
 		}),
 	}
 
@@ -441,7 +438,7 @@ func run(args []string) error {
 				select {
 				case c := <-netChange:
 					log.Infof("Network change detected: %s", c)
-					startupUnix.Store(time.Now().UnixNano()) // reset the startup marker so DNS fallback can happen again.
+					fallback.reset() // reopen the window so DNS fallback can happen again.
 					if err := p.resolver.Manager.Test(ctx); err != nil {
 						log.Errorf("Test after network change failed: %v", err)
 					}

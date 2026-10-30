@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -30,8 +31,14 @@ var tcpWriteTimeout = 10 * time.Second
 // goroutines and buffers.
 const maxTCPPipelinedQueries = 32
 
+// maxTCPConnections caps concurrent TCP connections. Each holds a read buffer
+// and up to maxTCPPipelinedQueries waiting replies, so this bounds the memory
+// TCP clients can pin. Connections beyond it are closed at once.
+var maxTCPConnections = 256
+
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := NewBufferPool()
+	conns := make(chan struct{}, maxTCPConnections)
 
 	for {
 		c, err := l.Accept()
@@ -41,9 +48,16 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 			}
 			return err
 		}
+		select {
+		case conns <- struct{}{}:
+		default:
+			_ = c.Close()
+			continue
+		}
 		inflight.Add(1)
 		go func() {
 			defer inflight.Done()
+			defer func() { <-conns }()
 			if err := p.serveTCPConn(ctx, c, inflightRequests, bpool); err != nil {
 				if p.ErrorLog != nil {
 					p.ErrorLog(err)
@@ -144,14 +158,21 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			}
 			rbp := bpool.Get()
 			rbuf := *rbp
+			buffersHeld := true
+			releaseBuffers := func() {
+				if buffersHeld {
+					buffersHeld = false
+					bpool.Put(bp)
+					bpool.Put(rbp)
+				}
+			}
 			defer func() {
 				if r := recover(); r != nil {
 					stackBuf := make([]byte, 64<<10)
 					stackBuf = stackBuf[:runtime.Stack(stackBuf, false)]
 					err = fmt.Errorf("panic: %v: %s", r, string(stackBuf))
 				}
-				bpool.Put(bp)
-				bpool.Put(rbp)
+				releaseBuffers()
 				releaseSlot()
 				p.logQuery(QueryInfo{
 					PeerIP:            q.PeerIP,
@@ -174,8 +195,14 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
+			// A reply waiting for a slow reader holds only its frame, not the
+			// two 64KB buffers. q.PeerIP can point into buf, so keep a copy for
+			// the query log once buf is reused.
+			frame := newTCPFrame(rbuf[:rsize])
+			q.PeerIP = slices.Clone(q.PeerIP)
+			releaseBuffers()
 			releaseSlot()
-			werr := w.write(rbuf[:rsize])
+			werr := w.writeFrame(frame)
 			if err == nil {
 				// Do not overwrite resolve error when on cache fallback.
 				err = werr
@@ -208,9 +235,18 @@ type tcpWriter struct {
 // failed write closes the connection, so every queued reply fails at once and
 // releases its in-flight slot.
 func (w *tcpWriter) write(buf []byte) error {
+	return w.writeFrame(newTCPFrame(buf))
+}
+
+// newTCPFrame copies buf behind its 2-byte length prefix.
+func newTCPFrame(buf []byte) []byte {
 	frame := make([]byte, 2+len(buf))
 	binary.BigEndian.PutUint16(frame, uint16(len(buf)))
 	copy(frame[2:], buf)
+	return frame
+}
+
+func (w *tcpWriter) writeFrame(frame []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_ = w.c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))

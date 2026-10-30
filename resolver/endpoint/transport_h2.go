@@ -23,7 +23,7 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 			ServerName:         e.Hostname,
 			RootCAs:            getRootCAs(),
 			ClientSessionCache: tls.NewLRUClientSessionCache(0),
-			MinVersion: tls.VersionTLS13,
+			MinVersion:         tls.VersionTLS13,
 		},
 		DialContext: func(ctx context.Context, network, _ string) (c net.Conn, err error) {
 			c, err = d.DialParallel(ctx, network, addrs)
@@ -45,7 +45,13 @@ func newTransportH2(e *DOHEndpoint, addrs []string) http.RoundTripper {
 			return c, err
 		},
 		ForceAttemptHTTP2: true,
-		IdleConnTimeout:   90 * time.Second,
+		// A write can succeed into the socket buffer even when the connection
+		// is blackholed. Check peer liveness independently of request deadlines.
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 10 * time.Second,
+			PingTimeout:     5 * time.Second,
+		},
+		IdleConnTimeout: 90 * time.Second,
 	}
 	if e.onConnect != nil {
 		t = roundTripperConnectTracer{

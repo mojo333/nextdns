@@ -24,6 +24,12 @@ var tcpClientReadTimeout = 10 * time.Second
 // cannot hold a reply goroutine and its in-flight slot forever.
 var tcpWriteTimeout = 10 * time.Second
 
+// maxTCPPipelinedQueries caps the unanswered queries one TCP connection may
+// have. Past it the connection is not read until replies drain, so a client
+// that reads slowly or not at all slows only itself and cannot park unbounded
+// goroutines and buffers.
+const maxTCPPipelinedQueries = 32
+
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := NewBufferPool()
 
@@ -49,6 +55,7 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 
 func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *BufferPool) error {
 	w := &tcpWriter{c: c}
+	pending := make(chan struct{}, maxTCPPipelinedQueries)
 	var wg sync.WaitGroup
 	defer func() {
 		// Wait for all query processing goroutines to complete before closing
@@ -69,6 +76,13 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 	}()
 
 	for {
+		// Wait for room under this connection's pipelining cap. Only this
+		// client waits, and a failed write or shutdown still frees the loop.
+		select {
+		case pending <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
 		if tcpClientReadTimeout > 0 {
 			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
 		}
@@ -76,6 +90,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		// just above, so check for cancellation here rather than wait out the
 		// idle timeout.
 		if ctx.Err() != nil {
+			<-pending
 			return nil
 		}
 		bp := bpool.Get()
@@ -84,6 +99,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		_ = c.SetReadDeadline(time.Time{})
 		if err != nil {
 			bpool.Put(bp)
+			<-pending
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
@@ -91,6 +107,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		}
 		if qsize <= 14 {
 			bpool.Put(bp)
+			<-pending
 			return fmt.Errorf("query too small: %d", qsize)
 		}
 		start := time.Now()
@@ -99,11 +116,23 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		if !tryAcquireRequest(inflightRequests) {
 			p.rejectTCP(c, w, buf, qsize, start)
 			bpool.Put(bp)
+			<-pending
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-pending }()
+			// The in-flight slot bounds upstream work, so it is released as soon
+			// as resolving ends rather than held while the reply waits for a
+			// slow reader.
+			slotHeld := true
+			releaseSlot := func() {
+				if slotHeld {
+					slotHeld = false
+					<-inflightRequests
+				}
+			}
 			var err error
 			var rsize int
 			var ri resolver.ResolveInfo
@@ -123,7 +152,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 				}
 				bpool.Put(bp)
 				bpool.Put(rbp)
-				<-inflightRequests
+				releaseSlot()
 				p.logQuery(QueryInfo{
 					PeerIP:            q.PeerIP,
 					Protocol:          "TCP",
@@ -145,6 +174,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
+			releaseSlot()
 			werr := w.write(rbuf[:rsize])
 			if err == nil {
 				// Do not overwrite resolve error when on cache fallback.

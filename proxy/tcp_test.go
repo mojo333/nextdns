@@ -248,7 +248,9 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 // to its ID, so a length prefix from one reply followed by another reply's body
 // shows up as a mismatch.
 func TestTCPConn_PipelinedRepliesAreNotInterleaved(t *testing.T) {
-	const queries = 50
+	// As many as one connection may have unanswered, so all are resolved
+	// together and their replies race to be written.
+	const queries = maxTCPPipelinedQueries
 
 	var arrived sync.WaitGroup
 	arrived.Add(queries)

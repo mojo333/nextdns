@@ -92,9 +92,7 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 					stackBuf = stackBuf[:runtime.Stack(stackBuf, false)]
 					err = fmt.Errorf("panic: %v: %s", r, string(stackBuf))
 				}
-				bpool.Put(bp)
-				bpool.Put(rbp)
-				<-inflightRequests
+				// Log before returning buf, which q.PeerIP can point into.
 				p.logQuery(QueryInfo{
 					PeerIP:            q.PeerIP,
 					Protocol:          "UDP",
@@ -108,6 +106,9 @@ func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests 
 					UpstreamTransport: ri.Transport,
 					Error:             err,
 				})
+				bpool.Put(bp)
+				bpool.Put(rbp)
+				<-inflightRequests
 			}()
 			// Derive from the serve context so shutdown cancels in-flight
 			// requests; the timeout bounds them even when Timeout is 0.

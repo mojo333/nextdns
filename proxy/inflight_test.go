@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -244,5 +245,49 @@ func TestServeTCPConn_CapsPipelinedQueriesPerConnection(t *testing.T) {
 	// Assert
 	if got := resolved.Load(); got > maxTCPPipelinedQueries {
 		t.Fatalf("%d queries accepted from a client that never reads, want at most %d", got, maxTCPPipelinedQueries)
+	}
+}
+
+func TestServeTCP_ClosesConnectionsBeyondTheCap(t *testing.T) {
+	// Arrange: each connection holds a read buffer and up to
+	// maxTCPPipelinedQueries waiting replies, so the number of connections
+	// must be bounded for memory to be.
+	prev := maxTCPConnections
+	maxTCPConnections = 2
+	t.Cleanup(func() { maxTCPConnections = prev })
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var inflight sync.WaitGroup
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = (Proxy{}).serveTCP(ctx, l, make(chan struct{}, 10), &inflight)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		l.Close()
+		<-served
+		inflight.Wait()
+	})
+
+	// Act: open one connection more than the cap, all idle.
+	var conns []net.Conn
+	for i := 0; i <= maxTCPConnections; i++ {
+		c, err := net.Dial("tcp", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		conns = append(conns, c)
+	}
+
+	// Assert: the extra connection is closed at once rather than served.
+	extra := conns[maxTCPConnections]
+	_ = extra.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := extra.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("connection beyond the cap: read err = %v, want EOF", err)
 	}
 }

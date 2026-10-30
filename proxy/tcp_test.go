@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -238,6 +239,69 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 	count := atomic.LoadInt32(&resolveCount)
 	if count != 3 {
 		t.Errorf("Expected 3 queries to be resolved, got %d", count)
+	}
+}
+
+// TestTCPConn_PipelinedRepliesAreNotInterleaved sends many queries on one
+// connection without waiting (RFC 7766 pipelining) and releases every resolve
+// at once, so the replies are written concurrently. Each reply's length is tied
+// to its ID, so a length prefix from one reply followed by another reply's body
+// shows up as a mismatch.
+func TestTCPConn_PipelinedRepliesAreNotInterleaved(t *testing.T) {
+	const queries = 50
+	server, client := net.Pipe()
+	defer client.Close()
+
+	var arrived sync.WaitGroup
+	arrived.Add(queries)
+	release := make(chan struct{})
+	go func() {
+		arrived.Wait()
+		close(release)
+	}()
+	p := Proxy{
+		Upstream: &mockSlowResolver{
+			resolveFunc: func(ctx context.Context, q query.Query, buf []byte) (int, resolver.ResolveInfo, error) {
+				arrived.Done()
+				<-release
+				n := 12 + int(q.ID)
+				binary.BigEndian.PutUint16(buf, q.ID)
+				return n, resolver.ResolveInfo{}, nil
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	go func() {
+		_ = p.serveTCPConn(context.Background(), server, make(chan struct{}, queries), NewTieredBufferPool())
+	}()
+
+	for id := 1; id <= queries; id++ {
+		q := []byte{
+			0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00,
+			0x00, 0x01, 0x00, 0x01,
+		}
+		binary.BigEndian.PutUint16(q, uint16(id))
+		frame := binary.BigEndian.AppendUint16(nil, uint16(len(q)))
+		if _, err := client.Write(append(frame, q...)); err != nil {
+			t.Fatalf("write query %d: %v", id, err)
+		}
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for i := 0; i < queries; i++ {
+		var length uint16
+		if err := binary.Read(client, binary.BigEndian, &length); err != nil {
+			t.Fatalf("read reply %d length: %v", i, err)
+		}
+		body := make([]byte, length)
+		if _, err := io.ReadFull(client, body); err != nil {
+			t.Fatalf("read reply %d body: %v", i, err)
+		}
+		id := binary.BigEndian.Uint16(body)
+		if want := 12 + int(id); len(body) != want {
+			t.Fatalf("reply %d: id %d has %d bytes, want %d (frames interleaved)", i, id, len(body), want)
+		}
 	}
 }
 

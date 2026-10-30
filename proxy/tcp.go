@@ -148,10 +148,14 @@ func readTCP(r io.Reader, buf []byte) (int, error) {
 	return io.ReadFull(r, buf[:length])
 }
 
+// writeTCP sends the length prefix and the message in a single Write. Replies
+// for pipelined queries on one connection are written from separate
+// goroutines, and a Go net.Conn never interleaves two Write calls, whereas two
+// writes per reply could put one reply's length in front of another's body.
 func writeTCP(c net.Conn, buf []byte) error {
-	if err := binary.Write(c, binary.BigEndian, uint16(len(buf))); err != nil {
-		return err
-	}
-	_, err := c.Write(buf)
+	frame := make([]byte, 2+len(buf))
+	binary.BigEndian.PutUint16(frame, uint16(len(buf)))
+	copy(frame[2:], buf)
+	_, err := c.Write(frame)
 	return err
 }

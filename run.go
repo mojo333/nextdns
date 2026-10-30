@@ -299,19 +299,7 @@ func run(args []string) error {
 	p.resolver.DNS53.MaxTTL = maxTTL
 	p.resolver.DOH.MaxTTL = maxTTL
 
-	if len(c.Profile) == 0 || (len(c.Profile) == 1 && c.Profile.Get(nil, nil, nil) != "") {
-		// Optimize for no dynamic configuration.
-		profile := c.Profile.Get(nil, nil, nil)
-		profileURL := "https://dns.nextdns.io/" + profile
-		p.resolver.DOH.GetProfileURL = func(q query.Query) (url, profile string) {
-			return profileURL, profile
-		}
-	} else {
-		p.resolver.DOH.GetProfileURL = func(q query.Query) (url, profile string) {
-			profile = c.Profile.Get(q.PeerIP, q.LocalIP, q.MAC)
-			return "https://dns.nextdns.io/" + profile, profile
-		}
-	}
+	p.resolver.DOH.GetProfileURL = profileURLFunc(c.Profile)
 
 	p.Proxy = proxy.Proxy{
 		Addrs:               c.Listens,
@@ -646,4 +634,21 @@ func shortID(confID string, deviceID []byte) string {
 		}
 	}
 	return string(buf)
+}
+
+// profileURLFunc returns the DoH URL and profile ID for each query.
+func profileURLFunc(profiles config.Profiles) func(q query.Query) (url, profile string) {
+	if len(profiles) == 0 || (len(profiles) == 1 && profiles.Get(nil, nil, nil) != "") {
+		// Optimize for no dynamic configuration.
+		profileID := profiles.Get(nil, nil, nil)
+		profileURL := "https://dns.nextdns.io/" + profileID
+		// Unnamed results: named ones would shadow profileID and return "".
+		return func(q query.Query) (string, string) {
+			return profileURL, profileID
+		}
+	}
+	return func(q query.Query) (string, string) {
+		profileID := profiles.Get(q.PeerIP, q.LocalIP, q.MAC)
+		return "https://dns.nextdns.io/" + profileID, profileID
+	}
 }

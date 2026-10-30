@@ -67,6 +67,12 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		if tcpClientReadTimeout > 0 {
 			_ = c.SetReadDeadline(time.Now().Add(tcpClientReadTimeout))
 		}
+		// The shutdown watcher's immediate deadline may have been overwritten
+		// just above, so check for cancellation here rather than wait out the
+		// idle timeout.
+		if ctx.Err() != nil {
+			return nil
+		}
 		if !tryAcquireRequest(inflightRequests) {
 			// Closing lets the client retry; replies already in flight on this
 			// connection are still written before the deferred close.

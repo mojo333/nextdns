@@ -39,7 +39,7 @@ GOOS=windows GOARCH=amd64 go build -o /dev/null .
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which cross-compiles linux amd64/arm64/armv7 and freebsd amd64/arm64 with `CGO_ENABLED=0` and `-ldflags "-s -w -X main.version=<tag without v>"`, then attaches tarballs and `SHA256SUMS` to the GitHub release. Those release assets are the production artefacts.
 
-Neither `.goreleaser.yml` nor `.github/actions/goreleaser/` is used by any workflow, because both belong to upstream's packaging pipeline. The binaries committed under `build/` are copies of a release's assets, extracted from the published tarballs and committed by hand after the release, so they can lag behind `master`. Check them with `go version build/<platform>/nextdns` and `strings build/<platform>/nextdns | grep -x '2\.[0-9]*\.[0-9]*'` before assuming they match a given tag. `install-custom.sh` installs from a fork's releases via `CUSTOM_GITHUB_REPO`, and it defaults to upstream when that variable is unset.
+Neither `.goreleaser.yml` nor `.github/actions/goreleaser/` is used by any workflow, because both belong to upstream's packaging pipeline. Binaries are not committed to the repository; the release assets and their `SHA256SUMS` are the only artefacts. Check a downloaded binary with `go version <binary>` and `strings <binary> | grep -x '2\.[0-9]*\.[0-9]*'`. `install-custom.sh` installs from a fork's releases via `CUSTOM_GITHUB_REPO`, and it defaults to upstream when that variable is unset.
 
 ## Architecture
 

@@ -147,6 +147,10 @@ func New(payload []byte, peerIP, localIP net.IP) (Query, error) {
 }
 
 func (qry *Query) parse() error {
+	// Only a forwarder on loopback, such as dnsmasq with --add-mac, may tell us
+	// the client's MAC. Taking it from anyone else would let a LAN client pick
+	// another device's per-MAC profile. Decide before ECS can rewrite PeerIP.
+	fromLoopback := qry.PeerIP.IsLoopback()
 	p := &dnsmessage.Parser{}
 	h, err := p.Start(qry.Payload)
 	if err != nil {
@@ -188,7 +192,9 @@ func (qry *Query) parse() error {
 			for _, o := range opt.Options {
 				switch o.Code {
 				case EDNS0_MAC:
-					qry.MAC = net.HardwareAddr(o.Data)
+					if fromLoopback && len(o.Data) == 6 {
+						qry.MAC = net.HardwareAddr(o.Data)
+					}
 				case EDNS0_SUBNET:
 					if len(o.Data) >= 8 {
 						switch o.Data[1] {

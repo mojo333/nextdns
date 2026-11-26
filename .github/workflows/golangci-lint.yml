@@ -10,7 +10,8 @@ on:
 
 jobs:
   lint:
-    name: Run golangci-lint
+    # Branch protection on master requires a check with this name.
+    name: lint
     runs-on: ubuntu-latest
 
     steps:

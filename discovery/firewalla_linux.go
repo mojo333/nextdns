@@ -60,8 +60,8 @@ func (r *Firewalla) Name() string {
 }
 
 func (r *Firewalla) Visit(f func(name string, macs []string)) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.refreshLocked()
 	m := map[string][]string{}
 	for mac, names := range r.macs {
@@ -75,8 +75,8 @@ func (r *Firewalla) Visit(f func(name string, macs []string)) {
 }
 
 func (r *Firewalla) LookupMAC(mac string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.refreshLocked()
 	return r.macs[mac]
 }

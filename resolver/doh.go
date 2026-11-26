@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -54,7 +55,7 @@ type DOH struct {
 }
 
 // resolve perform the the DoH call.
-func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.RoundTripper) (n int, i ResolveInfo, err error) {
+func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.RoundTripper, limiter *requestLimiter) (n int, i ResolveInfo, err error) {
 	var ci ClientInfo
 	if r.ClientInfo != nil {
 		ci = r.ClientInfo(q)
@@ -90,9 +91,7 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("X-Conf-Last-Modified", "true")
-	for name, values := range r.ExtraHeaders {
-		req.Header[name] = values
-	}
+	maps.Copy(req.Header, r.ExtraHeaders)
 	if ci.ID != "" {
 		req.Header.Set("X-Device-Id", ci.ID)
 	}
@@ -108,6 +107,10 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
+	if err := limiter.tryAcquire(); err != nil {
+		return n, i, err
+	}
+	defer limiter.release()
 	res, err := rt.RoundTrip(req)
 	if err != nil {
 		return n, i, err
@@ -120,7 +123,10 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 	n, truncated, err = readDNSResponse(res.Body, buf)
 	i.Transport = res.Proto
 	i.FromCache = false
-	if n > 0 && !truncated && err == nil && r.Cache != nil {
+	if q.Type != query.TypePTR && n > 0 && !truncated && err == nil && r.Cache != nil {
+		if now.IsZero() {
+			now = time.Now()
+		}
 		v := &cacheValue{
 			time:  now,
 			msg:   make([]byte, n),
@@ -151,14 +157,22 @@ func (r *DOH) updateLastMod(url, lastMod string) {
 	if err != nil {
 		return
 	}
+	r.mu.RLock()
+	curLastModTime := r.lastModified[url]
+	if !lastModTime.After(curLastModTime) {
+		r.mu.RUnlock()
+		return
+	}
+	r.mu.RUnlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if lastModTime.After(r.lastModified[url]) {
+	curLastModTime = r.lastModified[url]
+	if lastModTime.After(curLastModTime) {
 		if r.lastModified == nil {
 			r.lastModified = map[string]time.Time{}
 		}
 		r.lastModified[url] = lastModTime
 	}
+	r.mu.Unlock()
 }
 
 func readDNSResponse(r io.Reader, buf []byte) (n int, truncated bool, err error) {

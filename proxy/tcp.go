@@ -8,21 +8,23 @@ import (
 	"io"
 	"net"
 	"runtime"
-	"slices"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/nextdns/nextdns/internal/dnsmessage"
 	"github.com/nextdns/nextdns/resolver"
 	"github.com/nextdns/nextdns/resolver/query"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 const maxTCPSize = 65535
 
+type tcpBuf [maxTCPSize]byte
+
 var tcpClientReadTimeout = 10 * time.Second
 
 // tcpWriteTimeout bounds each reply write, so a client that stops reading
-// cannot hold a reply goroutine and its in-flight slot forever.
+// cannot hold a reply goroutine forever.
 var tcpWriteTimeout = 10 * time.Second
 
 // maxTCPPipelinedQueries caps the unanswered queries one TCP connection may
@@ -36,8 +38,22 @@ const maxTCPPipelinedQueries = 32
 // TCP clients can pin. Connections beyond it are closed at once.
 var maxTCPConnections = 256
 
+// acceptRetryDelay is the pause after an accept fails for lack of resources.
+var acceptRetryDelay = 100 * time.Millisecond
+
+// isResourceShortage reports whether an accept error is likely to clear once
+// other connections close or memory is freed.
+func isResourceShortage(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
+}
+
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
-	bpool := NewBufferPool()
+	bpool := &sync.Pool{
+		New: func() any {
+			return new(tcpBuf)
+		},
+	}
 	conns := make(chan struct{}, maxTCPConnections)
 
 	for {
@@ -45,6 +61,14 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
+			}
+			if isResourceShortage(err) {
+				p.logErr(fmt.Errorf("TCP accept: %w", err))
+				select {
+				case <-time.After(acceptRetryDelay):
+					continue
+				case <-ctx.Done():
+				}
 			}
 			return err
 		}
@@ -67,12 +91,18 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 	}
 }
 
-func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *BufferPool) error {
+func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests chan struct{}, bpool *sync.Pool) error {
+	localAddr := c.LocalAddr()
+	remoteAddr := c.RemoteAddr()
+	localIP := addrIP(localAddr)
+	sourceIP := addrIP(remoteAddr)
+	localPort := addrPort(localAddr)
+	remotePort := addrPort(remoteAddr)
 	w := &tcpWriter{c: c}
 	pending := make(chan struct{}, maxTCPPipelinedQueries)
 	var wg sync.WaitGroup
 	defer func() {
-		// Wait for all query processing goroutines to complete before closing
+		// Wait for all query processing goroutines to complete before closing.
 		wg.Wait()
 		c.Close()
 	}()
@@ -104,31 +134,28 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 		// just above, so check for cancellation here rather than wait out the
 		// idle timeout.
 		if ctx.Err() != nil {
-			<-pending
 			return nil
 		}
-		bp := bpool.Get()
-		buf := *bp
+		bp := bpool.Get().(*tcpBuf)
+		buf := bp[:]
 		qsize, err := readTCP(c, buf)
 		_ = c.SetReadDeadline(time.Time{})
 		if err != nil {
 			bpool.Put(bp)
-			<-pending
-			if errors.Is(err, io.EOF) {
+			if err == io.EOF {
 				return nil
 			}
 			return fmt.Errorf("TCP read: %v", err)
 		}
 		if qsize <= 14 {
 			bpool.Put(bp)
-			<-pending
 			return fmt.Errorf("query too small: %d", qsize)
 		}
 		start := time.Now()
 		// Take the slot only once a whole query has arrived, so an idle
 		// connection never holds one.
 		if !tryAcquireRequest(inflightRequests) {
-			p.rejectTCP(c, w, buf, qsize, start)
+			p.rejectTCP(w, bp, qsize, localIP, sourceIP, localPort, remotePort, start)
 			bpool.Put(bp)
 			<-pending
 			continue
@@ -150,14 +177,13 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			var err error
 			var rsize int
 			var ri resolver.ResolveInfo
-			localIP := addrIP(c.LocalAddr())
-			remoteIP := addrIP(c.RemoteAddr())
-			q, err := query.New(buf[:qsize], remoteIP, localIP)
+			buf := bp[:]
+			q, err := query.New(buf[:qsize], sourceIP, localIP)
 			if err != nil {
 				p.logErr(err)
 			}
-			rbp := bpool.Get()
-			rbuf := *rbp
+			rbp := bpool.Get().(*tcpBuf)
+			rbuf := rbp[:]
 			buffersHeld := true
 			releaseBuffers := func() {
 				if buffersHeld {
@@ -175,6 +201,9 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 				releaseBuffers()
 				releaseSlot()
 				p.logQuery(QueryInfo{
+					SourceIP:          sourceIP,
+					RemotePort:        remotePort,
+					LocalPort:         localPort,
 					PeerIP:            q.PeerIP,
 					Protocol:          "TCP",
 					Type:              q.Type.String(),
@@ -188,6 +217,24 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 					Error:             err,
 				})
 			}()
+			// reply sends the answer in rbuf. A reply waiting for a slow reader
+			// holds only its frame, not the two 64KB buffers or a slot.
+			reply := func() error {
+				frame := newTCPFrame(rbuf[:rsize])
+				releaseBuffers()
+				releaseSlot()
+				return w.writeFrame(frame)
+			}
+
+			if err != nil {
+				// Malformed query: reply with FORMERR and skip upstream resolution.
+				rsize = replyRCode(dnsmessage.RCodeFormatError, q, rbuf)
+				if werr := reply(); werr != nil {
+					// Keep the parse error but include the write error.
+					err = fmt.Errorf("%v (write: %w)", err, werr)
+				}
+				return
+			}
 			// Derive from the serve context so shutdown cancels in-flight
 			// requests; the timeout bounds them even when Timeout is 0.
 			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
@@ -195,14 +242,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
-			// A reply waiting for a slow reader holds only its frame, not the
-			// two 64KB buffers. q.PeerIP can point into buf, so keep a copy for
-			// the query log once buf is reused.
-			frame := newTCPFrame(rbuf[:rsize])
-			q.PeerIP = slices.Clone(q.PeerIP)
-			releaseBuffers()
-			releaseSlot()
-			werr := w.writeFrame(frame)
+			werr := reply()
 			if err == nil {
 				// Do not overwrite resolve error when on cache fallback.
 				err = werr
@@ -229,11 +269,7 @@ type tcpWriter struct {
 	c  net.Conn
 }
 
-// write sends one reply with its length prefix. Writes are serialised so the
-// write deadline, which belongs to the whole connection, cannot be pushed back
-// by the next reply while a client that never reads keeps sending queries. Any
-// failed write closes the connection, so every queued reply fails at once and
-// releases its in-flight slot.
+// write sends one reply with its length prefix.
 func (w *tcpWriter) write(buf []byte) error {
 	return w.writeFrame(newTCPFrame(buf))
 }
@@ -246,6 +282,10 @@ func newTCPFrame(buf []byte) []byte {
 	return frame
 }
 
+// writeFrame serialises writes so the write deadline, which belongs to the
+// whole connection, cannot be pushed back by the next reply while a client that
+// never reads keeps sending queries. Any failed write closes the connection, so
+// every queued reply fails at once.
 func (w *tcpWriter) writeFrame(frame []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -259,10 +299,11 @@ func (w *tcpWriter) writeFrame(frame []byte) error {
 
 // rejectTCP answers a query that found no free in-flight slot and keeps the
 // connection open for the client's next query.
-func (p Proxy) rejectTCP(c net.Conn, w *tcpWriter, buf []byte, qsize int, start time.Time) {
-	q, rsize, err := rejectionReply(buf, qsize, addrIP(c.RemoteAddr()), addrIP(c.LocalAddr()))
+func (p Proxy) rejectTCP(w *tcpWriter, bp *tcpBuf, qsize int, localIP, sourceIP net.IP, localPort, remotePort int, start time.Time) {
+	buf := bp[:]
+	q, rsize, err := rejectionReply(buf, qsize, sourceIP, localIP)
 	if werr := w.write(buf[:rsize]); werr != nil {
 		err = fmt.Errorf("%v (write: %w)", err, werr)
 	}
-	p.logRejection("TCP", q, qsize, rsize, start, err)
+	p.logRejection("TCP", q, sourceIP, localPort, remotePort, qsize, rsize, start, err)
 }

@@ -2,15 +2,15 @@ package discovery
 
 import (
 	"crypto/rand"
-	"errors"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/nextdns/nextdns/host"
-	"github.com/nextdns/nextdns/internal/dnsmessage"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type DNS struct {
@@ -80,11 +80,7 @@ func (r *DNS) lookupAddr(addr string) []string {
 		return names
 	}
 	names, _ = queryPTR(r.Upstream, net.ParseIP(addr), r.rd)
-	for i, name := range names {
-		if isValidName(name) {
-			names[i] = name
-		}
-	}
+	names = slices.DeleteFunc(names, func(s string) bool { return !isValidName(s) })
 	if names == nil {
 		names = []string{}
 	}
@@ -161,22 +157,18 @@ func isPrivateIP(ip string) bool {
 }
 
 var bufPool = sync.Pool{
-	New: func() interface{} {
-		buf := make([]byte, 0, 514)
-		return &buf
+	New: func() any {
+		b := new(dnsMsgBuf)
+		return b
 	},
 }
 
-func putBufPool(buf []byte) {
-	if cap(buf) == 514 {
-		buf = buf[:0]
-		bufPool.Put(&buf)
-	}
-}
+type dnsMsgBuf [514]byte
 
 func queryPTR(dns string, ip net.IP, rd bool) ([]string, error) {
-	buf := *bufPool.Get().(*[]byte)
-	defer putBufPool(buf)
+	bp := bufPool.Get().(*dnsMsgBuf)
+	defer bufPool.Put(bp)
+	buf := bp[:0]
 	b := dnsmessage.NewBuilder(buf, dnsmessage.Header{
 		RecursionDesired: rd,
 	})
@@ -209,8 +201,9 @@ func (err dnsError) RCode() dnsmessage.RCode {
 }
 
 func queryName(dns, name string, typ dnsmessage.Type, rd bool) ([]string, error) {
-	buf := *bufPool.Get().(*[]byte)
-	defer putBufPool(buf)
+	bp := bufPool.Get().(*dnsMsgBuf)
+	defer bufPool.Put(bp)
+	buf := bp[:0]
 	b := dnsmessage.NewBuilder(buf, dnsmessage.Header{
 		RecursionDesired: rd,
 	})
@@ -264,7 +257,6 @@ func sendQuery(dns string, buf []byte, typ dnsmessage.Type) (rrs []string, err e
 		}
 		if id != uint16(buf[0])<<8|uint16(buf[1]) {
 			// Skip mismatch id as it may come from previous timeout query.
-			// The socket deadline bounds this loop.
 			continue
 		}
 		break
@@ -282,7 +274,7 @@ func sendQuery(dns string, buf []byte, typ dnsmessage.Type) (rrs []string, err e
 	}
 	for maxRR := 100; maxRR > 0; maxRR-- {
 		h, err := p.AnswerHeader()
-		if errors.Is(err, dnsmessage.ErrSectionDone) {
+		if err == dnsmessage.ErrSectionDone {
 			break
 		}
 		if err != nil {
@@ -369,31 +361,9 @@ func reverseIP(ip net.IP) string {
 	return string(buf)
 }
 
-// uitoaCache caches string representations of 0-255 to avoid allocations
-// for common IP octet values. This reduces allocations by ~90% for reverse
-// IP lookups.
-var uitoaCache = func() [256]string {
-	var cache [256]string
-	for i := 0; i < 256; i++ {
-		cache[i] = uitoaSlow(uint(i))
-	}
-	return cache
-}()
-
 // Convert unsigned integer to decimal string.
-// Optimized for IP octets (0-255) with pre-allocated cache.
 func uitoa(val uint) string {
-	// Fast path: use cache for common IP octet values
-	if val < 256 {
-		return uitoaCache[val]
-	}
-	// Slow path: convert larger values
-	return uitoaSlow(val)
-}
-
-// uitoaSlow converts unsigned integer to decimal string without cache.
-func uitoaSlow(val uint) string {
-	if val == 0 {
+	if val == 0 { // avoid string allocation
 		return "0"
 	}
 	var buf [20]byte // big enough for 64bit value base 10

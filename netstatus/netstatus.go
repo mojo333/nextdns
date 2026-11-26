@@ -33,8 +33,8 @@ func Notify(c chan<- Change) {
 	handlers.Lock()
 	defer handlers.Unlock()
 	if handlers.c == nil {
-		var ctx context.Context
-		ctx, cancel = context.WithCancel(context.Background())
+		ctx, stop := context.WithCancel(context.Background())
+		cancel = stop
 		go startChecker(ctx)
 	}
 	handlers.c = append(handlers.c, c)
@@ -44,7 +44,7 @@ func Notify(c chan<- Change) {
 func Stop(c chan<- Change) {
 	handlers.Lock()
 	defer handlers.Unlock()
-	var newC = make([]chan<- Change, 0, len(handlers.c)-1)
+	newC := handlers.c[:0]
 	for _, ch := range handlers.c {
 		if ch != c {
 			newC = append(newC, ch)
@@ -52,6 +52,8 @@ func Stop(c chan<- Change) {
 	}
 	handlers.c = newC
 	if len(handlers.c) == 0 && cancel != nil {
+		// Keep zero-subscriber state as nil so Notify can restart the checker.
+		handlers.c = nil
 		cancel()
 		cancel = nil
 	}
@@ -59,9 +61,15 @@ func Stop(c chan<- Change) {
 
 func broadcast(c Change) {
 	handlers.Lock()
-	defer handlers.Unlock()
-	for _, ch := range handlers.c {
-		ch <- c
+	chans := append([]chan<- Change(nil), handlers.c...)
+	handlers.Unlock()
+	// Best-effort delivery: a slow or stuck receiver should not block the
+	// checker goroutine (or prevent Stop/Notify from making progress).
+	for _, ch := range chans {
+		select {
+		case ch <- c:
+		default:
+		}
 	}
 }
 

@@ -76,7 +76,8 @@ func (e *DOHEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 	req = req.WithContext(ctx)
 	res, err := e.RoundTrip(req)
 	if err != nil {
-		if uaeErr, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
+		var uaeErr x509.UnknownAuthorityError
+		if errors.As(err, &uaeErr) {
 			return 0, fmt.Errorf("roundtrip: %v (subject=%v, issuer=%v)",
 				err, uaeErr.Cert.Subject, uaeErr.Cert.Issuer)
 		}
@@ -87,7 +88,7 @@ func (e *DOHEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 		return 0, fmt.Errorf("status: %d", res.StatusCode)
 	}
 	// A single Read may return only part of the body, so keep reading until
-	// EOF or until buf is full. Upstream reads once here.
+	// EOF or until buf is full.
 	for n < len(buf) {
 		var nn int
 		nn, err = res.Body.Read(buf[n:])

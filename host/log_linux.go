@@ -2,6 +2,7 @@ package host
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 )
@@ -11,13 +12,17 @@ func newServiceLogger(name string) (Logger, error) {
 }
 
 func ReadLog(name string) ([]byte, error) {
-	pattern, err := logGrepPattern(name)
-	if err != nil {
-		return nil, err
-	}
 	// Merlin
 	if _, err := os.Stat("/jffs/syslog.log"); err == nil {
-		return exec.Command("grep", pattern, "/jffs/syslog.log").Output()
+		b, err := exec.Command("grep", fmt.Sprintf(` %s\(:\|\[\)`, name), "/jffs/syslog.log").Output()
+		if err != nil {
+			var e *exec.ExitError
+			// grep exits with code 1 when no lines match, which should not fail `nextdns log`.
+			if errors.As(err, &e) && e.ExitCode() == 1 {
+				return b, nil
+			}
+		}
+		return b, err
 	}
 	// OpenWRT
 	if _, err := exec.LookPath("logread"); err == nil {
@@ -41,7 +46,15 @@ func ReadLog(name string) ([]byte, error) {
 	}
 	// Pre-systemd
 	if _, err := os.Stat("/var/log/messages"); err == nil {
-		return exec.Command("grep", pattern, "/var/log/messages").Output()
+		b, err := exec.Command("grep", fmt.Sprintf(` %s\(:\|\[\)`, name), "/var/log/messages").Output()
+		if err != nil {
+			var e *exec.ExitError
+			// grep exits with code 1 when no lines match, which should not fail `nextdns log`.
+			if errors.As(err, &e) && e.ExitCode() == 1 {
+				return b, nil
+			}
+		}
+		return b, err
 	}
 	return nil, errors.New("not supported")
 }

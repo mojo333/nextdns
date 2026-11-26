@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -419,4 +420,31 @@ func TestActiveEndpoint_Test_ClearsTestingWhenManagerBlocked(t *testing.T) {
 		t.Fatal("testing flag is still set after background test timeout")
 	}
 	ae.setTesting(false, false)
+}
+
+func TestActiveEndpoint_UpstreamBusyDoesNotAffectHealth(t *testing.T) {
+	m := newTestManager(t)
+	m.ErrorThreshold = 1
+	ae := &activeEnpoint{
+		Endpoint:     &DOHEndpoint{Hostname: "a"},
+		manager:      &m.Manager,
+		lastTest:     time.Now(),
+		testInterval: time.Hour,
+	}
+
+	err := ae.do(func(Endpoint) error {
+		return fmt.Errorf("request rejected: %w", ErrUpstreamBusy)
+	})
+	if err == nil {
+		t.Fatal("do() error = nil, want admission error")
+	}
+	if got := atomic.LoadUint32(&ae.consecutiveErrors); got != 0 {
+		t.Fatalf("consecutiveErrors = %d, want 0", got)
+	}
+	ae.mu.RLock()
+	testingEndpoint := ae.testing
+	ae.mu.RUnlock()
+	if testingEndpoint {
+		t.Fatal("independent error triggered endpoint testing")
+	}
 }

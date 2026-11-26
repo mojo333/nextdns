@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/nextdns/nextdns/host"
@@ -13,28 +14,48 @@ import (
 )
 
 type Config struct {
-	File                 string
-	Listens              []string
-	Control              string
-	ConfigDeprecated     Profiles
-	Profile              Profiles
-	Forwarders           Forwarders
-	LogQueries           bool
-	CacheSize            string
-	CacheMaxAge          time.Duration
-	CacheMetrics         bool
-	MaxTTL               time.Duration
-	ReportClientInfo     bool
-	DiscoveryDNS         string
-	MDNS                 string
-	DetectCaptivePortals bool
-	BogusPriv            bool
-	UseHosts             bool
-	Timeout              time.Duration
-	MaxInflightRequests  uint
-	SetupRouter          bool
-	AutoActivate         bool
-	Debug                bool
+	File                        string
+	Listens                     []string
+	Control                     string
+	ConfigDeprecated            Profiles
+	Profile                     Profiles
+	Forwarders                  Forwarders
+	LogQueries                  bool
+	CacheSize                   string
+	CacheMetrics                bool
+	CacheMaxAge                 time.Duration
+	MaxTTL                      time.Duration
+	ReportClientInfo            bool
+	DiscoveryDNS                string
+	MDNS                        string
+	DetectCaptivePortals        bool
+	BogusPriv                   bool
+	UseHosts                    bool
+	Timeout                     time.Duration
+	MaxInflightRequests         uint
+	MaxInflightUpstreamRequests uint
+	SetupRouter                 bool
+	AutoActivate                bool
+	Debug                       bool
+}
+
+// Validate checks constraints between configuration values.
+func (c *Config) Validate() error {
+	if c.MaxInflightUpstreamRequests == 0 {
+		return fmt.Errorf("max-inflight-upstream-requests must be greater than zero")
+	}
+	proxyLimit := c.MaxInflightRequests
+	if proxyLimit == 0 {
+		proxyLimit = 256
+	}
+	maxUpstreamLimit := proxyLimit / 2
+	if maxUpstreamLimit == 0 {
+		maxUpstreamLimit = 1
+	}
+	if c.MaxInflightUpstreamRequests > maxUpstreamLimit {
+		return fmt.Errorf("max-inflight-upstream-requests must not exceed %d when max-inflight-requests is %d", maxUpstreamLimit, proxyLimit)
+	}
+	return nil
 }
 
 func (c *Config) Parse(cmd string, args []string, useStorage bool) {
@@ -104,6 +125,8 @@ func (c *Config) flagSet(cmd string) flagSet {
 			"  profile to a specific host on the LAN.\n"+
 			"* eth0=abcdef: An interface name can be used to restrict a profile\n"+
 			"  to all hosts behind this interface.\n"+
+			"* @alice=abcdef: On macOS, Windows and Linux (systemd-logind), the\n"+
+			"  active interactive user can be used to pick a profile for localhost requests.\n"+
 			"\n"+
 			"This parameter can be repeated. The first match wins.")
 	fs.Var(&c.Forwarders, "forwarder",
@@ -126,9 +149,9 @@ func (c *Config) flagSet(cmd string) flagSet {
 			"can be expressed with unit like kB, MB, GB. The cache is automatically\n"+
 			"flushed when the pointed profile is updated.")
 	fs.BoolVar(&c.CacheMetrics, "cache-metrics", false,
-		"Enable cache metrics collection. When enabled, detailed cache\n"+
-			"performance metrics (hits, misses, evictions) can be retrieved\n"+
-			"via the cache-metrics control command.")
+		"Enable cache metrics collection for the control socket.\n"+
+			"\n"+
+			"Collecting metrics adds a small CPU and memory overhead.")
 	fs.DurationVar(&c.CacheMaxAge, "cache-max-age", 0,
 		"If set to greater than 0, a cached entry will be considered stale after\n"+
 			"this duration, even if the record's TTL is higher.")
@@ -169,9 +192,15 @@ func (c *Config) flagSet(cmd string) flagSet {
 	fs.DurationVar(&c.Timeout, "timeout", 5*time.Second, "Maximum duration allowed for a request before failing.")
 	fs.UintVar(&c.MaxInflightRequests, "max-inflight-requests", 256,
 		"Maximum number of inflight requests handled by the proxy. No additional\n"+
-			"requests will not be answered after this threshold is met. Increasing\n"+
+			"requests will be processed after this threshold is met. Increasing\n"+
 			"this value can reduce latency in case of burst of requests but it can\n"+
 			"also increase significantly memory usage.")
+	fs.UintVar(&c.MaxInflightUpstreamRequests, "max-inflight-upstream-requests", 32,
+		"Maximum number of concurrent network query requests allowed for each upstream\n"+
+			"resolver. Cached and local answers do not count toward this limit. When\n"+
+			"the limit is reached, additional requests for that resolver fail fast.\n"+
+			"The value must not exceed half of max-inflight-requests, reserving proxy-wide\n"+
+			"capacity for other answers.")
 	fs.BoolVar(&c.SetupRouter, "setup-router", false,
 		"Automatically configure NextDNS for a router setup.\n"+
 			"Common types of router are detected to integrate gracefully. Changes\n"+
@@ -193,10 +222,8 @@ func (s *multiStringValue) Strings() []string {
 }
 
 func (s *multiStringValue) Set(value string) error {
-	for _, str := range *s {
-		if value == str {
-			return nil
-		}
+	if slices.Contains(*s, value) {
+		return nil
 	}
 	*s = append(*s, value)
 	return nil

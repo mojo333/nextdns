@@ -14,6 +14,10 @@ import (
 
 var TestDomain = "probe-test.dns.nextdns.io."
 
+// ErrUpstreamBusy indicates local admission rejection before an endpoint
+// request was made. It must not affect endpoint health accounting.
+var ErrUpstreamBusy = errors.New("too many inflight upstream requests")
+
 const (
 	// DefaultErrorThreshold defines the default value for Manager ErrorThreshold.
 	DefaultErrorThreshold = 10
@@ -407,6 +411,9 @@ func (e *activeEnpoint) do(action func(e Endpoint) error) error {
 		e.test()
 	}
 	if err := action(e.Endpoint); err != nil {
+		if errors.Is(err, ErrUpstreamBusy) {
+			return err
+		}
 		errThreshold := e.manager.ErrorThreshold
 		if errThreshold == 0 {
 			errThreshold = DefaultErrorThreshold

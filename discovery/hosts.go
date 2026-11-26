@@ -48,6 +48,8 @@ func (r *Hosts) Name() string {
 	return "hosts"
 }
 
+// refresh reloads the file once the cached copy expires. Reloading writes the
+// maps, so it needs the write lock.
 func (r *Hosts) refresh() {
 	r.mu.RLock()
 	expired := !time.Now().Before(r.expires)
@@ -142,7 +144,7 @@ func readHostsFile(file string) (names, addrs map[string][]string, err error) {
 			addrs[addr] = append(addrs[addr], name)
 		}
 	}
-	for _, lh := range []string{"localhost", "localhost.localdomain."} {
+	for _, lh := range []string{"localhost.", "localhost.localdomain."} {
 		if len(names[lh]) == 0 {
 			// Some systemd based systems like arch linux have an empty hosts
 			// file and rely on systemd-resolved to handle special hostnames

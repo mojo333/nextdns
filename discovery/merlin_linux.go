@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -15,7 +16,9 @@ type Merlin struct {
 	once      sync.Once
 	supported bool
 
-	table macTable
+	mu      sync.RWMutex
+	macs    map[string][]string
+	expires time.Time
 }
 
 func (r *Merlin) init() {
@@ -25,12 +28,19 @@ func (r *Merlin) init() {
 	}
 }
 
-func (r *Merlin) refresh() {
+func (r *Merlin) refreshLocked() {
 	r.once.Do(r.init)
 	if !r.supported {
 		return
 	}
-	if err := r.table.refresh(30*time.Second, clientListMerlin); err != nil && r.OnError != nil {
+
+	now := time.Now()
+	if now.Before(r.expires) {
+		return
+	}
+	r.expires = now.Add(30 * time.Second)
+
+	if err := r.clientListLocked(); err != nil && r.OnError != nil {
 		r.OnError(fmt.Errorf("clientList: %v", err))
 	}
 }
@@ -40,13 +50,25 @@ func (r *Merlin) Name() string {
 }
 
 func (r *Merlin) Visit(f func(name string, macs []string)) {
-	r.refresh()
-	r.table.visit(f)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
+	m := map[string][]string{}
+	for mac, names := range r.macs {
+		for _, name := range names {
+			m[name] = append(m[name], mac)
+		}
+	}
+	for name, macs := range m {
+		f(name, macs)
+	}
 }
 
 func (r *Merlin) LookupMAC(mac string) []string {
-	r.refresh()
-	return r.table.lookupMAC(mac)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
+	return r.macs[mac]
 }
 
 func (r *Merlin) LookupAddr(addr string) []string {
@@ -57,17 +79,22 @@ func (r *Merlin) LookupHost(name string) []string {
 	return nil
 }
 
-func clientListMerlin() (map[string][]string, error) {
+func (r *Merlin) clientListLocked() error {
 	cmd := exec.Command("nvram", "get", "custom_clientlist")
 	b, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// Dirty hack - attempt to add '<' char when var is populated, but opening '<' is non-existent
 	if len(b) > 0 && b[0] != '<' {
 		b = append([]byte{'<'}, b[0:]...)
 	}
-	return readClientList(b)
+	macs, err := readClientList(b)
+	if err != nil {
+		return err
+	}
+	r.macs = macs
+	return nil
 }
 
 func readClientList(b []byte) (macs map[string][]string, err error) {
@@ -83,7 +110,7 @@ func readClientList(b []byte) (macs map[string][]string, err error) {
 			b = b[1:]
 			continue
 		default:
-			return nil, fmt.Errorf("%s: invalid format: missing item separator", string(b))
+			return nil, errors.New("invalid format: missing item separator")
 		}
 		b = b[1:]
 		eol := bytes.IndexByte(b, '<')
@@ -92,11 +119,11 @@ func readClientList(b []byte) (macs map[string][]string, err error) {
 		}
 		idx := bytes.IndexByte(b, '>')
 		if idx == -1 {
-			return nil, fmt.Errorf("%s: invalid format: missing host separator", string(b))
+			return nil, errors.New("invalid format: missing host separator")
 		}
 		idx2 := idx + 18
 		if idx2 > eol || len(b) <= idx2 || b[idx2] != '>' {
-			return nil, fmt.Errorf("%s: invalid format: missing MAC separator", string(b))
+			return nil, errors.New("invalid format: missing MAC separator")
 		}
 		if idx > 0 {
 			name := string(b[:idx])

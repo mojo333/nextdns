@@ -1,49 +1,73 @@
 package resolver
 
 import (
+	"errors"
+	"math"
+
 	"github.com/dgraph-io/ristretto/v2"
 )
 
-// ByteCache is a ristretto-backed cache implementing the Cacher interface.
-// It uses byte cost for eviction (len of cached DNS message) and TinyLFU
-// admission policy.
+// ByteCache is a byte-limited cache implementation for DNS responses.
+// It is backed by Ristretto and uses cost in bytes for eviction decisions.
 type ByteCache struct {
-	cache *ristretto.Cache[uint64, *cacheValue]
+	c *ristretto.Cache[uint64, *cacheValue]
 }
 
-// NewByteCache creates a new ristretto-backed cache with the given max cost
-// in bytes. If metrics is true, ristretto will collect hit/miss/eviction stats.
+// NewByteCache creates a new byte-limited cache with maxCost expressed in bytes.
+// If metrics is false, cache metrics collection is disabled.
 func NewByteCache(maxCost uint64, metrics bool) (*ByteCache, error) {
-	c, err := ristretto.NewCache(&ristretto.Config[uint64, *cacheValue]{
-		NumCounters: int64(maxCost / 100), // ~1 counter per 100 bytes of cost
-		MaxCost:     int64(maxCost),
+	if maxCost == 0 {
+		return nil, errors.New("maxCost must be > 0")
+	}
+
+	mc := int64(maxCost)
+	if maxCost > uint64(math.MaxInt64) {
+		mc = math.MaxInt64
+	}
+
+	// NumCounters should be ~10x the number of expected items. We don't know the
+	// average entry size, so approximate 1KiB per entry and clamp.
+	estEntries := max(mc/1024, 1024)
+	numCounters := max(estEntries*10, 1<<12)
+	if numCounters > 100_000_000 {
+		numCounters = 100_000_000
+	}
+
+	rc, err := ristretto.NewCache(&ristretto.Config[uint64, *cacheValue]{
+		NumCounters: numCounters,
+		MaxCost:     mc,
 		BufferItems: 64,
 		Metrics:     metrics,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &ByteCache{cache: c}, nil
+	return &ByteCache{c: rc}, nil
 }
 
-func (c *ByteCache) Get(key uint64) (*cacheValue, bool) {
-	return c.cache.Get(key)
+func (bc *ByteCache) Get(key uint64) (value *cacheValue, ok bool) {
+	if bc == nil || bc.c == nil {
+		return nil, false
+	}
+	return bc.c.Get(key)
 }
 
-func (c *ByteCache) Set(key uint64, value *cacheValue) {
+func (bc *ByteCache) Set(key uint64, value *cacheValue) {
+	if bc == nil || bc.c == nil || value == nil {
+		return
+	}
 	cost := int64(len(value.msg))
-	if cost == 0 {
+	if cost <= 0 {
 		cost = 1
 	}
-	c.cache.Set(key, value, cost)
+	// Ristretto's Set is async and may be dropped under contention.
+	_ = bc.c.Set(key, value, cost)
 }
 
-// Metrics returns the ristretto metrics, or nil if metrics are not enabled.
-func (c *ByteCache) Metrics() *ristretto.Metrics {
-	return c.cache.Metrics
-}
-
-// Close closes the underlying ristretto cache.
-func (c *ByteCache) Close() {
-	c.cache.Close()
+// Metrics returns Ristretto metrics (may be nil if metrics are disabled).
+func (bc *ByteCache) Metrics() *ristretto.Metrics {
+	if bc == nil || bc.c == nil {
+		return nil
+	}
+	return bc.c.Metrics
 }

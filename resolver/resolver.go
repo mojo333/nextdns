@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/nextdns/nextdns/resolver/endpoint"
@@ -25,7 +26,12 @@ type Resolver interface {
 }
 
 type Cacher interface {
+	// Get returns the cached value for key. Returned value must be treated as
+	// immutable by callers.
 	Get(key uint64) (value *cacheValue, ok bool)
+
+	// Set stores value in the cache. The cache implementation is responsible for
+	// computing the cost (typically based on response size in bytes).
 	Set(key uint64, value *cacheValue)
 }
 
@@ -35,10 +41,16 @@ type CacheStats struct {
 }
 
 type DNS struct {
-	DOH        DOH
-	DNS53      DNS53
-	Manager    *endpoint.Manager
-	cacheStats CacheStats
+	DOH     DOH
+	DNS53   DNS53
+	Manager *endpoint.Manager
+	// MaxInflightRequests limits concurrent network requests made by this
+	// resolver. Fresh cache hits do not consume a slot. Zero uses a conservative
+	// default. Set this field before the first call to Resolve.
+	MaxInflightRequests uint
+	cacheStats          CacheStats
+	limiterOnce         sync.Once
+	limiter             *requestLimiter
 }
 
 type ResolveInfo struct {
@@ -58,7 +70,7 @@ type ResolveInfo struct {
 //   - DNS53: 1.2.3.4,1.2.3.5
 func New(servers string) (Resolver, error) {
 	var endpoints []endpoint.Endpoint
-	for _, addr := range strings.Split(servers, ",") {
+	for addr := range strings.SplitSeq(servers, ",") {
 		e, err := endpoint.New(strings.TrimSpace(addr))
 		if err != nil {
 			return nil, fmt.Errorf("%s: unsupported resolver address: %v", addr, err)
@@ -71,22 +83,27 @@ func New(servers string) (Resolver, error) {
 	return &DNS{
 		Manager: &endpoint.Manager{
 			Providers: []endpoint.Provider{endpoint.StaticProvider(endpoints)},
+			// Avoid making the first query synchronously probe every endpoint.
+			// The manager tests candidates in the background while queries use
+			// the first configured endpoint under the resolver admission limit.
+			InitEndpoint: endpoints[0],
 		},
 	}, nil
 }
 
 // Resolve implements Resolver interface.
 func (r *DNS) Resolve(ctx context.Context, q query.Query, buf []byte) (n int, i ResolveInfo, err error) {
+	limiter := r.upstreamLimiter()
 	err = r.Manager.Do(ctx, func(e endpoint.Endpoint) error {
 		var err2 error
 		switch e := e.(type) {
 		case *endpoint.DOHEndpoint:
-			if n, i, err2 = r.DOH.resolve(ctx, q, buf, e); err2 != nil {
-				return fmt.Errorf("doh resolve: %v", err2)
+			if n, i, err2 = r.DOH.resolve(ctx, q, buf, e, limiter); err2 != nil {
+				return fmt.Errorf("doh resolve: %w", err2)
 			}
 		case *endpoint.DNSEndpoint:
-			if n, i, err2 = r.DNS53.resolve(ctx, q, buf, e.Addr); err2 != nil {
-				return fmt.Errorf("dns resolve: %v", err2)
+			if n, i, err2 = r.DNS53.resolve(ctx, q, buf, e.Addr, limiter); err2 != nil {
+				return fmt.Errorf("dns resolve: %w", err2)
 			}
 		default:
 			return fmt.Errorf("dns resolve: unsupported type: %T", e)
@@ -103,8 +120,15 @@ func (r *DNS) Resolve(ctx context.Context, q query.Query, buf []byte) (n int, i 
 	return n, i, err
 }
 
-// CacheStats returns the cache counters. Resolve increments them atomically
-// from many goroutines, so they are read atomically too.
+func (r *DNS) upstreamLimiter() *requestLimiter {
+	r.limiterOnce.Do(func() {
+		r.limiter = newRequestLimiter(r.MaxInflightRequests)
+	})
+	return r.limiter
+}
+
+// Resolve increments the counters atomically from many goroutines, so they are
+// read atomically too.
 func (r *DNS) CacheStats() CacheStats {
 	return CacheStats{
 		Hit:  atomic.LoadUint32(&r.cacheStats.Hit),

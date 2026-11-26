@@ -1,7 +1,7 @@
 #!/bin/sh
 
 main() {
-    OS=$(detect_os)
+    OS=$(detect_os) || exit 1
     GOARCH=$(detect_goarch)
     GOOS=$(detect_goos)
     NEXTDNS_BIN=$(bin_location)
@@ -255,16 +255,41 @@ uninstall_bin() {
 }
 
 install_rpm() {
-    asroot curl -Ls https://repo.nextdns.io/nextdns.repo -o /etc/yum.repos.d/nextdns.repo &&
-        asroot yum install -y nextdns
+    asroot mkdir -p /etc/yum.repos.d &&
+        asroot curl -Ls https://repo.nextdns.io/nextdns.repo -o /etc/yum.repos.d/nextdns.repo &&
+        asroot "$(rpm_pkg_manager)" install -y nextdns
 }
 
 upgrade_rpm() {
-    asroot yum update -y nextdns
+    asroot "$(rpm_pkg_manager)" update -y nextdns
 }
 
 uninstall_rpm() {
-    asroot yum remove -y nextdns
+    asroot "$(rpm_pkg_manager)" remove -y nextdns
+}
+
+install_rpmtree() {
+    asroot mkdir -p /etc/yum.repos.d &&
+        asroot curl -Ls https://repo.nextdns.io/nextdns.repo -o /etc/yum.repos.d/nextdns.repo &&
+        asroot rpm-ostree install nextdns
+}
+
+upgrade_rpmtree() {
+    asroot rpm-ostree install nextdns
+}
+
+uninstall_rpmtree() {
+    asroot rpm-ostree uninstall nextdns
+}
+
+rpm_pkg_manager() {
+    for cmd in dnf yum; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            echo "$cmd"; return 0
+        fi
+    done
+    log_error "No supported RPM package manager found (dnf, yum)"
+    return 1
 }
 
 install_zypper() {
@@ -301,7 +326,7 @@ install_deb_keyring() {
 install_source() {
     if [ ! -f /etc/apt/sources.list.d/nextdns.list ]; then
         asroot sh -c 'echo "deb [signed-by=/etc/apt/keyrings/nextdns.gpg] https://repo.nextdns.io/deb stable main" > /etc/apt/sources.list.d/nextdns.list' &&
-        (dpkg --compare-versions $(dpkg-query --showformat='${Version}' --show apt) ge 1.1 ||
+        (dpkg --compare-versions "$(dpkg-query --showformat='${Version}' --show apt)" ge 1.1 ||
          asroot ln -s /etc/apt/keyrings/nextdns.gpg /etc/apt/trusted.gpg.d/.)
     fi
 
@@ -385,13 +410,12 @@ upgrade_merlin() {
 }
 
 install_openwrt() {
-    opkg update &&
-        opkg install nextdns
+    openwrt_pkg install nextdns
     rt=$?
     if [ $rt -eq 0 ]; then
         case $(ask_bool 'Install the GUI?' true) in
         true)
-            opkg install luci-app-nextdns
+            openwrt_pkg install luci-app-nextdns
             rt=$?
             ;;
         esac
@@ -400,12 +424,56 @@ install_openwrt() {
 }
 
 upgrade_openwrt() {
-    opkg update &&
-        opkg upgrade nextdns
+    openwrt_pkg upgrade nextdns
 }
 
 uninstall_openwrt() {
-    opkg remove nextdns
+    openwrt_pkg remove nextdns
+}
+
+openwrt_pkg() {
+    action=$1
+    shift
+
+    # OpenWrt 25.12 and newer use apk, previous releases use opkg.
+    if command -v apk >/dev/null 2>&1; then
+        case $action in
+        install)
+            apk -U add "$@"
+            ;;
+        upgrade)
+            apk -U upgrade "$@"
+            ;;
+        remove)
+            apk del "$@"
+            ;;
+        *)
+            log_error "Unsupported OpenWrt package action: $action"
+            return 1
+            ;;
+        esac
+    elif command -v opkg >/dev/null 2>&1; then
+        case $action in
+        install)
+            opkg update &&
+                opkg install "$@"
+            ;;
+        upgrade)
+            opkg update &&
+                opkg upgrade "$@"
+            ;;
+        remove)
+            opkg remove "$@"
+            ;;
+        *)
+            log_error "Unsupported OpenWrt package action: $action"
+            return 1
+            ;;
+        esac
+    else
+        log_error "No supported OpenWrt package manager found (apk, opkg)"
+        return 1
+    fi
 }
 
 install_ddwrt() {
@@ -550,7 +618,11 @@ install_type() {
     esac
     case $OS in
     centos|fedora|rhel)
-        echo "rpm"
+        if [ -f /run/ostree-booted ] && command -v rpm-ostree >/dev/null 2>&1; then
+            echo "rpmtree"
+        else
+            echo "rpm"
+        fi
         ;;
     opensuse-tumbleweed|opensuse-leap|opensuse-slowroll|opensuse)
         echo "zypper"
@@ -910,7 +982,8 @@ detect_os() {
     fi
     case $(uname -s) in
     Linux)
-        case $(uname -o) in
+        uname_os=$(uname -o 2>/dev/null)
+        case $uname_os in
         GNU/Linux|Linux)
             if grep -q -e '^EdgeRouter' -e '^UniFiSecurityGateway' /etc/version 2> /dev/null; then
                 echo "edgeos"; return 0
@@ -948,6 +1021,10 @@ detect_os() {
         ASUSWRT-Merlin*)
             echo "asuswrt-merlin"; return 0
             ;;
+        ASUSWRT)
+            log_error "Stock ASUSWRT is not supported. ASUSWRT-Merlin is supported."
+            return 1
+            ;;
         DD-WRT)
             echo "ddwrt"; return 0
         esac
@@ -980,7 +1057,12 @@ detect_os() {
         ;;
     *)
     esac
-    log_error "Unsupported OS: $(uname -o) $(grep ID "/etc/os-release" 2>/dev/null | xargs)"
+    os_id=
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        os_id=$(. /etc/os-release; printf '%s' "$ID")
+    fi
+    log_error "Unsupported OS: $(uname -o 2>/dev/null)${os_id:+ (ID=$os_id)}"
     return 1
 }
 
@@ -1035,8 +1117,11 @@ bin_location() {
     openwrt|overthebox)
         echo "/usr/sbin/nextdns"
         ;;
-    synology|firewalla)
+    synology)
         echo "/usr/local/bin/nextdns"
+    ;;
+    firewalla)
+        echo "/home/pi/.firewalla/config/nextdns/nextdns"
     ;;
     darwin)
         echo "$(brew --prefix 2>/dev/null || echo /usr/local)/bin/nextdns"

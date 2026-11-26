@@ -74,7 +74,7 @@ func TestServeTCPConn_ReturnsPromptlyWhenContextCancelled(t *testing.T) {
 		cancel()
 		errC := make(chan error, 1)
 		go func() {
-			errC <- (Proxy{}).serveTCPConn(ctx, server, make(chan struct{}, 1), NewBufferPool())
+			errC <- (Proxy{}).serveTCPConn(ctx, server, make(chan struct{}, 1), testBufPool())
 		}()
 		select {
 		case <-errC:
@@ -95,7 +95,7 @@ func startTCPConn(t *testing.T, p Proxy, inflightRequests chan struct{}) net.Con
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = p.serveTCPConn(context.Background(), server, inflightRequests, NewBufferPool())
+		_ = p.serveTCPConn(context.Background(), server, inflightRequests, testBufPool())
 	}()
 	t.Cleanup(func() {
 		client.Close()

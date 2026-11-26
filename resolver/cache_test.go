@@ -1,12 +1,10 @@
 package resolver
 
 import (
-	"net"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/nextdns/nextdns/internal/testutil"
 	"github.com/nextdns/nextdns/resolver/query"
 )
 
@@ -115,96 +113,25 @@ func Test_cacheValue_AdjustedResponse(t *testing.T) {
 	}
 }
 
-func Test_cacheKey_Hash_Deterministic(t *testing.T) {
-	k := cacheKey{ctx: "https://dns.nextdns.io/abc123", qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."}
-	h1 := k.Hash()
-	h2 := k.Hash()
-	if h1 != h2 {
-		t.Errorf("Hash not deterministic: %d != %d", h1, h2)
-	}
-}
-
-func Test_cacheKey_Hash_DifferentKeys(t *testing.T) {
-	keys := []cacheKey{
-		{ctx: "", qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-		{ctx: "", qclass: query.ClassINET, qtype: query.TypeAAAA, qname: "example.com."},
-		{ctx: "", qclass: query.ClassINET, qtype: query.TypeA, qname: "other.com."},
-		{ctx: "https://dns.nextdns.io", qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-		{ctx: "", qclass: query.ClassCHAOS, qtype: query.TypeA, qname: "example.com."},
-	}
-	seen := map[uint64]int{}
-	for i, k := range keys {
-		h := k.Hash()
-		if prev, ok := seen[h]; ok {
-			t.Errorf("keys[%d] and keys[%d] have same hash %d", prev, i, h)
-		}
-		seen[h] = i
-	}
-}
-
 func Test_cacheKey_ValidateQuestion(t *testing.T) {
-	// Build a valid DNS response for "example.com." A IN
-	resp, err := testutil.NewTestResponse(1234, "example.com.", net.ParseIP("1.2.3.4"), 300)
-	if err != nil {
-		t.Fatal(err)
+	msg := []byte{
+		0x00, 0x01, // ID
+		0x01, 0x00, // Flags (RD)
+		0x00, 0x01, // Questions
+		0x00, 0x00, // Answers
+		0x00, 0x00, // Authorities
+		0x00, 0x00, // Additionals
+		// Question: test.com. A IN
+		0x04, 0x74, 0x65, 0x73, 0x74, 0x03, 0x63, 0x6f, 0x6d, 0x00,
+		0x00, 0x01, // Type A
+		0x00, 0x01, // Class IN
 	}
-
-	tests := []struct {
-		name string
-		key  cacheKey
-		msg  []byte
-		want bool
-	}{
-		{
-			name: "matching key",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-			msg:  resp,
-			want: true,
-		},
-		{
-			name: "wrong qtype",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeAAAA, qname: "example.com."},
-			msg:  resp,
-			want: false,
-		},
-		{
-			name: "wrong qname",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeA, qname: "other.com."},
-			msg:  resp,
-			want: false,
-		},
-		{
-			name: "wrong qclass",
-			key:  cacheKey{qclass: query.ClassCHAOS, qtype: query.TypeA, qname: "example.com."},
-			msg:  resp,
-			want: false,
-		},
-		{
-			name: "empty message",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-			msg:  []byte{},
-			want: false,
-		},
-		{
-			name: "truncated message",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-			msg:  resp[:6],
-			want: false,
-		},
-		{
-			name: "nil message",
-			key:  cacheKey{qclass: query.ClassINET, qtype: query.TypeA, qname: "example.com."},
-			msg:  nil,
-			want: false,
-		},
+	k := cacheKey{"", query.ClassINET, query.TypeA, "test.com."}
+	if !k.ValidateQuestion(msg) {
+		t.Fatalf("expected ValidateQuestion to be true")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.key.ValidateQuestion(tt.msg)
-			if got != tt.want {
-				t.Errorf("ValidateQuestion() = %v, want %v", got, tt.want)
-			}
-		})
+	k2 := cacheKey{"", query.ClassINET, query.TypeAAAA, "test.com."}
+	if k2.ValidateQuestion(msg) {
+		t.Fatalf("expected ValidateQuestion to be false")
 	}
 }

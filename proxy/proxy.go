@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/nextdns/nextdns/hosts"
-	"github.com/nextdns/nextdns/internal/dnsmessage"
 	"github.com/nextdns/nextdns/resolver"
 	"github.com/nextdns/nextdns/resolver/query"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // QueryInfo provides information about a DNS query handled by Proxy.
@@ -60,8 +60,8 @@ type Proxy struct {
 	// being cancelled.
 	Timeout time.Duration
 
-	// Maximum number of inflight requests. Further requests will
-	// not be answered.
+	// Maximum number of inflight requests. Further requests receive SERVFAIL
+	// without blocking a listener loop.
 	MaxInflightRequests uint
 
 	// QueryLog specifies an optional log function called for each received query.
@@ -78,35 +78,7 @@ type Proxy struct {
 
 const defaultMaxInflightRequests = 256
 
-// errTooManyInflightRequests is returned when every in-flight slot is taken.
-var errTooManyInflightRequests = errors.New("too many inflight requests")
-
-// tryAcquireRequest takes an in-flight slot without waiting. Waiting would stop
-// the read loops, so one slow upstream holding every slot would stall all
-// queries, including those the cache could answer at once.
-func tryAcquireRequest(inflightRequests chan struct{}) bool {
-	select {
-	case inflightRequests <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-// defaultRequestTimeout bounds request handling when Timeout is left unset
-// (or set to 0) so a hung upstream can never pin an inflight slot forever.
-const defaultRequestTimeout = 5 * time.Second
-
-// shutdownGraceTimeout bounds how long ListenAndServe waits for in-flight
-// request handlers after its context is cancelled.
-const shutdownGraceTimeout = 5 * time.Second
-
-func (p Proxy) requestTimeout() time.Duration {
-	if p.Timeout > 0 {
-		return p.Timeout
-	}
-	return defaultRequestTimeout
-}
+var errTooManyInflightRequests = errors.New("too many inflight proxy requests")
 
 // ListenAndServe listens on UDP and TCP and serve DNS queries. If ctx is
 // canceled, listeners are closed and ListenAndServe returns context.Canceled
@@ -200,7 +172,7 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 	// Wait for the two sockets (+ ctx err) to be terminated and return the
 	// initial error.
 	var err error
-	for i := 0; i < expReturns; i++ {
+	for range expReturns {
 		if e := <-errs; (err == nil || errors.Is(err, context.Canceled)) && e != nil {
 			err = e
 		}
@@ -257,13 +229,40 @@ func (p Proxy) maxInflightRequests() int {
 	return int(p.MaxInflightRequests)
 }
 
+// defaultRequestTimeout bounds request handling when Timeout is left unset
+// (or set to 0) so a hung upstream can never pin an inflight slot forever.
+const defaultRequestTimeout = 5 * time.Second
+
+// shutdownGraceTimeout bounds how long ListenAndServe waits for in-flight
+// request handlers after its context is cancelled.
+const shutdownGraceTimeout = 5 * time.Second
+
+func (p Proxy) requestTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+	return defaultRequestTimeout
+}
+
+// tryAcquireRequest takes an in-flight slot without waiting. Waiting would stop
+// the read loops, so one slow upstream holding every slot would stall all
+// queries, including those the cache could answer at once.
+func tryAcquireRequest(inflightRequests chan struct{}) bool {
+	select {
+	case inflightRequests <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p Proxy) logQuery(q QueryInfo) {
 	if p.QueryLog != nil {
 		p.QueryLog(q)
 	}
 }
 
-func (p Proxy) logInfof(format string, a ...interface{}) {
+func (p Proxy) logInfof(format string, a ...any) {
 	if p.InfoLog != nil {
 		p.InfoLog(fmt.Sprintf(format, a...))
 	}
@@ -286,8 +285,11 @@ func rejectionReply(buf []byte, qsize int, peerIP, localIP net.IP) (query.Query,
 	return q, replyRCode(dnsmessage.RCodeServerFailure, q, buf), errTooManyInflightRequests
 }
 
-func (p Proxy) logRejection(protocol string, q query.Query, qsize, rsize int, start time.Time, err error) {
+func (p Proxy) logRejection(protocol string, q query.Query, sourceIP net.IP, localPort, remotePort, qsize, rsize int, start time.Time, err error) {
 	p.logQuery(QueryInfo{
+		SourceIP:     sourceIP,
+		RemotePort:   remotePort,
+		LocalPort:    localPort,
 		PeerIP:       q.PeerIP,
 		Protocol:     protocol,
 		Type:         q.Type.String(),

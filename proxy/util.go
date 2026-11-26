@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nextdns/nextdns/internal/dnsmessage"
 	"github.com/nextdns/nextdns/resolver"
 	"github.com/nextdns/nextdns/resolver/query"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func replyRCode(rcode dnsmessage.RCode, q query.Query, buf []byte) (n int) {
@@ -204,4 +204,23 @@ func addrIP(addr net.Addr) (ip net.IP) {
 		ip = net.ParseIP(host)
 	}
 	return
+}
+
+func addrPort(addr net.Addr) int {
+	switch addr := addr.(type) {
+	case *net.UDPAddr:
+		return addr.Port
+	case *net.TCPAddr:
+		return addr.Port
+	default:
+		_, port, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return 0
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
 }

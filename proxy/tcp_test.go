@@ -31,6 +31,10 @@ func (m *mockSlowResolver) Resolve(ctx context.Context, q query.Query, buf []byt
 	return 12, resolver.ResolveInfo{}, nil
 }
 
+func testBufPool() *sync.Pool {
+	return &sync.Pool{New: func() any { return new(tcpBuf) }}
+}
+
 func TestServeTCPConn_IdleReadTimeout(t *testing.T) {
 	prev := tcpClientReadTimeout
 	tcpClientReadTimeout = 50 * time.Millisecond
@@ -41,7 +45,7 @@ func TestServeTCPConn_IdleReadTimeout(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
 
-	bpool := NewBufferPool()
+	bpool := testBufPool()
 	inflightRequests := make(chan struct{}, 1)
 	errC := make(chan error, 1)
 
@@ -107,7 +111,7 @@ func TestTCPConn_WaitsForInflightQueries(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewBufferPool()
+		bpool := testBufPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
@@ -199,7 +203,7 @@ func TestTCPConn_MultipleInflightQueries(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewBufferPool()
+		bpool := testBufPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 	}()
 
@@ -337,7 +341,7 @@ func TestTCPConn_GracefulShutdown(t *testing.T) {
 			return
 		}
 		inflightRequests := make(chan struct{}, 10)
-		bpool := NewBufferPool()
+		bpool := testBufPool()
 		_ = p.serveTCPConn(context.Background(), conn, inflightRequests, bpool)
 		close(serverDone)
 	}()

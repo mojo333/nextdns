@@ -153,7 +153,7 @@ func (s Service) LoadConfig(c map[string]service.ConfigEntry) error {
 			return err
 		}
 		if _, ok := entry.(service.ConfigListEntry); ok {
-			for _, value := range strings.Split(out, "|-|") {
+			for value := range strings.SplitSeq(out, "|-|") {
 				if strings.HasPrefix(value, "'") {
 					value = strings.Trim(value, "'")
 				}
@@ -200,6 +200,8 @@ start_service() {
 		procd_set_param stdout 1
 		procd_set_param stderr 1
 		procd_set_param respawn
+		# Allow router restoration to finish restarting dnsmasq before SIGKILL.
+		procd_set_param term_timeout 30
 		procd_close_instance
 	fi
 }

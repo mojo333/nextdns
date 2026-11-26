@@ -46,3 +46,4 @@ func TestDNSEndpointExchange_MatchesResponseID(t *testing.T) {
 
 	<-done
 }
+

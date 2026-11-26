@@ -30,7 +30,7 @@ type DNS53 struct {
 
 var defaultDialer = &net.Dialer{}
 
-func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr string) (n int, i ResolveInfo, err error) {
+func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr string, limiter *requestLimiter) (n int, i ResolveInfo, err error) {
 	i.Transport = "UDP"
 	var now time.Time
 	n = 0
@@ -47,6 +47,10 @@ func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr stri
 			}
 		}
 	}
+	if err := limiter.tryAcquire(); err != nil {
+		return n, i, err
+	}
+	defer limiter.release()
 	d := r.Dialer
 	if d == nil {
 		d = defaultDialer
@@ -72,13 +76,12 @@ func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr stri
 		}
 		if q.ID != uint16(buf[0])<<8|uint16(buf[1]) {
 			// Skip mismatch id as it may come from previous timeout query.
-			// The socket deadline bounds this loop.
 			continue
 		}
 		break
 	}
 	i.FromCache = false
-	if r.Cache != nil {
+	if q.Type != query.TypePTR && r.Cache != nil {
 		v := &cacheValue{
 			time: now,
 			msg:  make([]byte, n),

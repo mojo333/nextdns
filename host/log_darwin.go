@@ -7,17 +7,27 @@ import (
 	"unsafe"
 )
 
-/*
-#include <syslog.h>
-#include <os/log.h>
-#include <stdlib.h>
-
-void doLog(int facility, uint8_t type, const char *msg) {
-	syslog(facility, "%s", msg);
-	os_log_t log = os_log_create("io.nextdns.NextDNS", "daemon");
-	os_log_with_type(log, type, "%{public}s", msg);
-}
-*/
+//#include <syslog.h>
+//#include <os/log.h>
+//#include <stdlib.h>
+//void doLog(int severity, const char *msg) {
+//	syslog(severity|LOG_DAEMON, "%s", msg);
+//	os_log_type_t t = OS_LOG_TYPE_DEFAULT;
+//	switch (severity) {
+//	case LOG_DEBUG:
+//		t = OS_LOG_TYPE_DEBUG;
+//		break;
+//	case LOG_INFO:
+//		t = OS_LOG_TYPE_INFO;
+//		break;
+//	case LOG_ERR:
+//		t = OS_LOG_TYPE_ERROR;
+//		break;
+//	default:
+//		t = OS_LOG_TYPE_DEFAULT;
+//	}
+//	os_log_with_type(OS_LOG_DEFAULT, t, "%{public}s", msg);
+//}
 import "C"
 
 const kLOG_DAEMON = 0x18
@@ -28,42 +38,42 @@ const kLOG_DEBUG = 0x7
 
 type macosLogger struct{}
 
-func (l macosLogger) log(facility int, osLogType uint8, msg string) {
-	cs := C.CString(msg)
-	defer C.free(unsafe.Pointer(cs))
-	C.doLog(C.int(facility|kLOG_DAEMON), C.uint8_t(osLogType), cs)
+func (l macosLogger) log(facility int, msg string) {
+	cmsg := C.CString(msg)
+	defer C.free(unsafe.Pointer(cmsg))
+	C.doLog(C.int(facility), cmsg)
 }
 
 func (l macosLogger) Debug(v ...interface{}) {
-	l.log(kLOG_DEBUG, C.OS_LOG_TYPE_DEBUG, fmt.Sprint(v...))
+	l.log(kLOG_DEBUG, fmt.Sprint(v...))
 }
 
 func (l macosLogger) Debugf(format string, a ...interface{}) {
-	l.log(kLOG_DEBUG, C.OS_LOG_TYPE_DEBUG, fmt.Sprintf(format, a...))
+	l.log(kLOG_DEBUG, fmt.Sprintf(format, a...))
 }
 
 func (l macosLogger) Info(v ...interface{}) {
-	l.log(kLOG_INFO, C.OS_LOG_TYPE_INFO, fmt.Sprint(v...))
+	l.log(kLOG_INFO, fmt.Sprint(v...))
 }
 
 func (l macosLogger) Infof(format string, a ...interface{}) {
-	l.log(kLOG_INFO, C.OS_LOG_TYPE_INFO, fmt.Sprintf(format, a...))
+	l.log(kLOG_INFO, fmt.Sprintf(format, a...))
 }
 
 func (l macosLogger) Warning(v ...interface{}) {
-	l.log(kLOG_WARNING, C.OS_LOG_TYPE_DEFAULT, fmt.Sprint(v...))
+	l.log(kLOG_WARNING, fmt.Sprint(v...))
 }
 
 func (l macosLogger) Warningf(format string, a ...interface{}) {
-	l.log(kLOG_WARNING, C.OS_LOG_TYPE_DEFAULT, fmt.Sprintf(format, a...))
+	l.log(kLOG_WARNING, fmt.Sprintf(format, a...))
 }
 
 func (l macosLogger) Error(v ...interface{}) {
-	l.log(kLOG_ERR, C.OS_LOG_TYPE_ERROR, fmt.Sprint(v...))
+	l.log(kLOG_ERR, fmt.Sprint(v...))
 }
 
 func (l macosLogger) Errorf(format string, a ...interface{}) {
-	l.log(kLOG_ERR, C.OS_LOG_TYPE_ERROR, fmt.Sprintf(format, a...))
+	l.log(kLOG_ERR, fmt.Sprintf(format, a...))
 }
 
 func newServiceLogger(name string) (Logger, error) {
@@ -71,15 +81,13 @@ func newServiceLogger(name string) (Logger, error) {
 }
 
 func ReadLog(process string) ([]byte, error) {
-	return exec.Command("log", "show", "--info", "--debug",
-		"--predicate", fmt.Sprintf(`process == "%s" OR sender == "%s"`, process, process),
-		"--no-pager", "--style", "syslog").Output()
+	predicate := fmt.Sprintf(`process == "%[1]s" OR sender == "%[1]s"`, process)
+	return exec.Command("log", "show", "--info", "--debug", "--predicate", predicate, "--no-pager", "--style", "syslog").Output()
 }
 
 func FollowLog(process string) error {
-	cmd := exec.Command("log", "stream", "--level", "debug",
-		"--predicate", fmt.Sprintf(`process == "%s" OR sender == "%s"`, process, process),
-		"--style", "syslog")
+	predicate := fmt.Sprintf(`process == "%[1]s" OR sender == "%[1]s"`, process)
+	cmd := exec.Command("log", "stream", "--level", "debug", "--predicate", predicate, "--style", "syslog")
 	cmd.Stdout = os.Stdout
 	return cmd.Run()
 }

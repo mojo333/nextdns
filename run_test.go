@@ -337,3 +337,14 @@ func TestProxy_ConcurrentStopDuringInit(t *testing.T) {
 		t.Fatal("stop() timed out - possible deadlock")
 	}
 }
+
+// A router can boot long before its network does, so the retry delay must not
+// keep doubling for ever.
+func TestNextStartBackoffIsCapped(t *testing.T) {
+	if got := nextStartBackoff(100 * time.Millisecond); got != 200*time.Millisecond {
+		t.Errorf("nextStartBackoff(100ms) = %v, want 200ms", got)
+	}
+	if got := nextStartBackoff(25 * time.Second); got != 30*time.Second {
+		t.Errorf("nextStartBackoff(25s) = %v, want the 30s cap", got)
+	}
+}

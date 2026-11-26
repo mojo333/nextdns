@@ -13,21 +13,39 @@ type profile struct {
 	Prefix  *net.IPNet
 	MAC     net.HardwareAddr
 	DestIPs []net.IP
+	User    string
 }
 
 // newConfig parses a configuration id with an optional condition.
 func newConfig(v string) (profile, error) {
-	idx := strings.IndexByte(v, '=')
-	if idx == -1 {
+	before, after, ok := strings.Cut(v, "=")
+	if !ok {
 		return profile{ID: v}, nil
 	}
 
-	cond := strings.TrimSpace(v[:idx])
-	conf := strings.TrimSpace(v[idx+1:])
+	cond := strings.TrimSpace(before)
+	conf := strings.TrimSpace(after)
 	c := profile{ID: conf}
 
-	if _, ipnet, err := net.ParseCIDR(cond); err == nil {
+	if u, ok := strings.CutPrefix(cond, "@"); ok {
+		if u == "" {
+			return profile{}, fmt.Errorf("%s: invalid user condition format", cond)
+		}
+		c.User = u
+	} else if _, ipnet, err := net.ParseCIDR(cond); err == nil {
 		c.Prefix = ipnet
+	} else if ip := net.ParseIP(cond); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			c.Prefix = &net.IPNet{
+				IP:   ip4,
+				Mask: net.CIDRMask(32, 32),
+			}
+		} else {
+			c.Prefix = &net.IPNet{
+				IP:   ip.To16(),
+				Mask: net.CIDRMask(128, 128),
+			}
+		}
 	} else if mac, err := net.ParseMAC(cond); err == nil {
 		c.MAC = mac
 	} else if iface, _ := net.InterfaceByName(cond); iface != nil {
@@ -38,15 +56,21 @@ func newConfig(v string) (profile, error) {
 			}
 		}
 	} else {
-		if err != nil {
-			return profile{}, fmt.Errorf("%s: invalid condition format or non-existent interface name", cond)
-		}
+		return profile{}, fmt.Errorf("%s: invalid condition format or non-existent interface name", cond)
 	}
 	return c, nil
 }
 
 // Match returns true if the rule matches ip or interface and mac.
-func (p profile) Match(sourceIP, destIP net.IP, mac net.HardwareAddr) bool {
+func (p profile) Match(sourceIP, destIP net.IP, mac net.HardwareAddr, user string) bool {
+	if p.User != "" {
+		if user == "" {
+			return false
+		}
+		if p.User != user {
+			return false
+		}
+	}
 	if p.Prefix != nil {
 		if sourceIP == nil {
 			return false
@@ -78,10 +102,13 @@ func (p profile) Match(sourceIP, destIP net.IP, mac net.HardwareAddr) bool {
 }
 
 func (p profile) isDefault() bool {
-	return p.Prefix == nil && len(p.MAC) == 0 && len(p.DestIPs) == 0
+	return p.Prefix == nil && len(p.MAC) == 0 && len(p.DestIPs) == 0 && p.User == ""
 }
 
 func (p profile) String() string {
+	if p.User != "" {
+		return fmt.Sprintf("@%s=%s", p.User, p.ID)
+	}
 	if p.MAC != nil {
 		return fmt.Sprintf("%s=%s", p.MAC, p.ID)
 	}
@@ -96,9 +123,18 @@ type Profiles []profile
 
 // Get returns the configuration matching the ip and mac conditions.
 func (ps *Profiles) Get(sourceIP, destIP net.IP, mac net.HardwareAddr) string {
+	return ps.get(sourceIP, destIP, mac, "")
+}
+
+// GetWithUser returns the configuration matching ip, mac and user conditions.
+func (ps *Profiles) GetWithUser(sourceIP, destIP net.IP, mac net.HardwareAddr, user string) string {
+	return ps.get(sourceIP, destIP, mac, user)
+}
+
+func (ps *Profiles) get(sourceIP, destIP net.IP, mac net.HardwareAddr, user string) string {
 	var def string
 	for _, p := range *ps {
-		if p.Match(sourceIP, destIP, mac) {
+		if p.Match(sourceIP, destIP, mac, user) {
 			if p.isDefault() {
 				def = p.ID
 				continue
@@ -107,6 +143,15 @@ func (ps *Profiles) Get(sourceIP, destIP net.IP, mac net.HardwareAddr) string {
 		}
 	}
 	return def
+}
+
+func (ps *Profiles) HasUserRules() bool {
+	for _, p := range *ps {
+		if p.User != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // String is the method to format the flag's value
@@ -133,10 +178,11 @@ func (ps *Profiles) Set(value string) error {
 	}
 	// Replace if c match the same criteria of an existing config
 	for i, _p := range *ps {
-		if (p.MAC != nil && _p.MAC != nil && bytes.Equal(p.MAC, _p.MAC)) ||
+		if (p.User != "" && p.User == _p.User) ||
+			(p.MAC != nil && _p.MAC != nil && bytes.Equal(p.MAC, _p.MAC)) ||
 			(p.DestIPs != nil && _p.DestIPs != nil && ipListEqual(p.DestIPs, _p.DestIPs)) ||
 			(p.Prefix != nil && _p.Prefix != nil && p.Prefix.String() == _p.Prefix.String()) ||
-			(p.MAC == nil && p.Prefix == nil && p.DestIPs == nil && _p.MAC == nil && _p.Prefix == nil && _p.DestIPs == nil) {
+			(p.MAC == nil && p.Prefix == nil && p.DestIPs == nil && p.User == "" && _p.MAC == nil && _p.Prefix == nil && _p.DestIPs == nil && _p.User == "") {
 			(*ps)[i] = p
 			return nil
 		}

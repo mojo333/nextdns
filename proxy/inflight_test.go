@@ -202,8 +202,13 @@ func TestServeTCPConn_ReleasesSlotsWhileRepliesWaitToBeWritten(t *testing.T) {
 	client := startTCPConn(t, Proxy{Upstream: &mockSlowResolver{}}, inflightRequests)
 	frame := append(binary.BigEndian.AppendUint16(nil, uint16(len(exampleQuery))), exampleQuery...)
 
-	// Act
-	for i := 0; i < 10; i++ {
+	// Act: send exactly as many as the pipelining cap allows. net.Pipe is
+	// unbuffered, so writing past the cap would itself block here until an
+	// earlier reply's write times out and closes the connection, which is a
+	// different, separately tested behavior (see
+	// TestServeTCPConn_ClosesConnectionWhenClientStopsReading); a real socket's
+	// send buffer would absorb more, but this fixture does not.
+	for i := 0; i < maxTCPPipelinedQueries; i++ {
 		if _, err := client.Write(frame); err != nil {
 			t.Fatal(err)
 		}

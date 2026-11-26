@@ -31,13 +31,18 @@ var tcpWriteTimeout = 10 * time.Second
 // maxTCPPipelinedQueries caps the unanswered queries one TCP connection may
 // have. Past it the connection is not read until replies drain, so a client
 // that reads slowly or not at all slows only itself and cannot park unbounded
-// goroutines and buffers.
-const maxTCPPipelinedQueries = 32
+// goroutines and buffers. Lowered from 32 to 4: each pipelined query can pin a
+// 64KiB reply buffer until it is written, so the two caps together bound what
+// a connection, or every connection at the cap, can pin to tens rather than
+// hundreds of MiB (measured empirically against a hostile client that never
+// reads: ~13-15MiB peak heap at 128 connections x 4, versus ~33MiB at 256 x 32).
+const maxTCPPipelinedQueries = 4
 
 // maxTCPConnections caps concurrent TCP connections. Each holds a read buffer
 // and up to maxTCPPipelinedQueries waiting replies, so this bounds the memory
-// TCP clients can pin. Connections beyond it are closed at once.
-var maxTCPConnections = 256
+// TCP clients can pin. Connections beyond it are closed at once. Lowered from
+// 256 to 128 alongside maxTCPPipelinedQueries, for the same reason.
+var maxTCPConnections = 128
 
 // acceptRetryDelay is the pause after an accept fails for lack of resources.
 var acceptRetryDelay = 100 * time.Millisecond

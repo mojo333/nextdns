@@ -105,7 +105,8 @@ ExecStart={{.Executable}}{{range .Arguments}} {{.}}{{end}}
 {{- if (.Config.HasFlag "podman") }}
 ExecStartPost=ssh -oStrictHostKeyChecking=no 127.0.0.1 ln -sf /data/nextdns /usr/bin/nextdns
 {{- end}}
-RestartSec=120
+Restart=on-failure
+RestartSec=5
 LimitMEMLOCK=infinity
 
 [Install]

@@ -119,7 +119,8 @@ StartLimitInterval=5
 StartLimitBurst=10
 Environment={{.RunModeEnv}}=1
 ExecStart={{.Executable}}{{range .Arguments}} {{.}}{{end}}
-RestartSec=120
+Restart=on-failure
+RestartSec=5
 LimitMEMLOCK=infinity
 
 [Install]

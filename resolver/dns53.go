@@ -45,6 +45,11 @@ func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr stri
 			if minTTL > 0 {
 				return n, i, nil
 			}
+			if now.Sub(v.time) > maxFallbackAge {
+				n, i.FromCache = 0, false
+			} else {
+				expireResponse(buf[:n])
+			}
 		}
 	}
 	if err := limiter.tryAcquire(); err != nil {

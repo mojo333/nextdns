@@ -121,6 +121,7 @@ func (r *DHCP) readLeaseLocked(file, format string) error {
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 	var macs, addrs, names map[string][]string
 	switch format {
 	case "isc-dhcpd":

@@ -52,18 +52,18 @@ sh install-custom.sh
 ### Install from Your GitHub Fork
 
 ```bash
-export CUSTOM_GITHUB_REPO="mojo_333/nextdns"
+export CUSTOM_GITHUB_REPO="mojo333/nextdns"
 sh install-custom.sh
 ```
 
 The installer will download binaries from:
-`https://github.com/mojo_333/nextdns/releases/download/v{VERSION}/nextdns_{VERSION}_{OS}_{ARCH}.tar.gz`
+`https://github.com/mojo333/nextdns/releases/download/v{VERSION}/nextdns_{VERSION}_{OS}_{ARCH}.tar.gz`
 
 ### Install Specific Version
 
 ```bash
-export CUSTOM_GITHUB_REPO="mojo_333/nextdns"
-export NEXTDNS_VERSION="1.44.0"
+export CUSTOM_GITHUB_REPO="mojo333/nextdns"
+export NEXTDNS_VERSION="2.4.0"
 sh install-custom.sh
 ```
 
@@ -71,52 +71,24 @@ sh install-custom.sh
 
 ```bash
 export DEBUG=1
-export CUSTOM_GITHUB_REPO="mojo_333/nextdns"
+export CUSTOM_GITHUB_REPO="mojo333/nextdns"
 sh install-custom.sh
 ```
+
+## Download Verification
+
+The installer checks each download against the release's `SHA256SUMS` (this fork) or `checksums.txt` (upstream), and installs nothing if the file is missing, does not list the archive or does not match. Snapshot builds have no checksums, so they are refused. A checksum from the same release catches a damaged or swapped download, but not a compromised release.
 
 ## Preparing GitHub Releases
 
-To use the custom installer with GitHub releases, you need to:
-
-### 1. Create GitHub Release
+Push a version tag. The `release` workflow runs the tests, builds linux amd64, arm64 and armv7 and freebsd amd64 and arm64, then attaches the archives and `SHA256SUMS` to the release.
 
 ```bash
-# Tag your version
-git tag -a v1.44.0 -m "Release v1.44.0 with bug fixes and optimizations"
-git push origin v1.44.0
+git tag -a v2.4.1 -m "v2.4.1"
+git push origin v2.4.1
 ```
 
-### 2. Build Binaries for All Platforms
-
-```bash
-# Build for multiple platforms
-GOOS=linux GOARCH=amd64 go build -o nextdns -ldflags="-s -w" .
-tar czf nextdns_1.44.0_linux_amd64.tar.gz nextdns
-
-GOOS=linux GOARCH=arm64 go build -o nextdns -ldflags="-s -w" .
-tar czf nextdns_1.44.0_linux_arm64.tar.gz nextdns
-
-GOOS=darwin GOARCH=amd64 go build -o nextdns -ldflags="-s -w" .
-tar czf nextdns_1.44.0_darwin_amd64.tar.gz nextdns
-
-# ... etc for other platforms
-```
-
-### 3. Upload to GitHub Release
-
-1. Go to https://github.com/yourusername/nextdns/releases
-2. Click "Draft a new release"
-3. Choose the tag (v1.44.0)
-4. Upload all the tar.gz files
-5. Publish release
-
-### 4. Users Can Install
-
-```bash
-export CUSTOM_GITHUB_REPO="yourusername/nextdns"
-sh install-custom.sh
-```
+A release built another way needs archives named `nextdns_{VERSION}_{OS}_{ARCH}.tar.gz` and a `SHA256SUMS` file in `sha256sum` format.
 
 ## Quick Test Installation (No GitHub Required)
 
@@ -124,7 +96,7 @@ For immediate testing without GitHub setup:
 
 ```bash
 # Navigate to build directory
-cd /home/mojo_333/nextdns
+cd nextdns
 
 # Install binary directly
 sudo mkdir -p /usr/local/bin
@@ -140,12 +112,9 @@ sudo /usr/local/bin/nextdns start
 
 The custom installer supports:
 
-**Binary Install (works with any GitHub repo):**
-- ✅ Linux (all distributions)
-- ✅ macOS
-- ✅ FreeBSD
-- ✅ OpenBSD
-- ✅ NetBSD
+**Binary install from this fork's releases:**
+- Linux on amd64, arm64 and armv7
+- FreeBSD on amd64 and arm64
 
 **Package Install (requires custom package repo):**
 - RPM (CentOS, Fedora, RHEL) - Needs custom RPM repo
@@ -169,22 +138,11 @@ The custom installer supports:
 
 ### "Cannot get latest version"
 
-Your GitHub repository needs a release with proper tags:
-```bash
-git tag -a v1.44.0 -m "Release v1.44.0"
-git push origin v1.44.0
-```
+The repository named in `CUSTOM_GITHUB_REPO` needs a published release.
 
-Then create a GitHub release for that tag with binaries.
+### "Cannot download" or "Checksum ... does not match"
 
-### "404 Not Found" when downloading
-
-Check that your GitHub release has the correct filename format:
-```
-nextdns_{VERSION}_{OS}_{ARCH}.tar.gz
-```
-
-Example: `nextdns_1.44.0_linux_amd64.tar.gz`
+Check that the release has both the archive for your platform, named `nextdns_{VERSION}_{OS}_{ARCH}.tar.gz`, and a `SHA256SUMS` file that lists it.
 
 ### Permission denied
 

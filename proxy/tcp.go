@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"syscall"
@@ -82,10 +83,10 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 		go func() {
 			defer inflight.Done()
 			defer func() { <-conns }()
-			if err := p.serveTCPConn(ctx, c, inflightRequests, bpool); err != nil {
-				if p.ErrorLog != nil {
-					p.ErrorLog(err)
-				}
+			// A read deadline ends idle connections and unblocks them on
+			// shutdown, so reaching it is not an error worth reporting.
+			if err := p.serveTCPConn(ctx, c, inflightRequests, bpool); !errors.Is(err, os.ErrDeadlineExceeded) {
+				p.logErr(err)
 			}
 		}()
 	}
@@ -145,7 +146,7 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("TCP read: %v", err)
+			return fmt.Errorf("TCP read: %w", err)
 		}
 		if qsize <= 14 {
 			bpool.Put(bp)
@@ -239,7 +240,8 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			// requests; the timeout bounds them even when Timeout is 0.
 			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
 			defer cancel()
-			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
+			// A failure that still left a cached answer is served from the cache.
+			if rsize, ri, err = p.Resolve(ctx, q, rbuf); (err != nil && !ri.FromCache) || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
 			werr := reply()

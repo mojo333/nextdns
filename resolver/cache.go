@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -52,6 +53,13 @@ func (k cacheKey) ValidateQuestion(msg []byte) bool {
 // Older addresses may have moved to somebody else. RFC 8767 suggests one to
 // three days.
 const maxFallbackAge = 24 * time.Hour
+
+// expireResponse zeroes every TTL, so a client given a fallback answer asks
+// again at once. Records can still be within their TTL when cache-max-age or a
+// shorter record is what expired the entry.
+func expireResponse(msg []byte) {
+	updateTTL(msg, math.MaxUint32, 0, 0)
+}
 
 type cacheValue struct {
 	time  time.Time

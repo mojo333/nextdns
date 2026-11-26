@@ -88,6 +88,8 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 				return n, i, nil
 			} else if now.Sub(v.time) > maxFallbackAge {
 				n, i = 0, ResolveInfo{Profile: i.Profile}
+			} else {
+				expireResponse(buf[:n])
 			}
 		}
 	}

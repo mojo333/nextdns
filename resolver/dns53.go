@@ -47,6 +47,8 @@ func (r DNS53) resolve(ctx context.Context, q query.Query, buf []byte, addr stri
 			}
 			if now.Sub(v.time) > maxFallbackAge {
 				n, i.FromCache = 0, false
+			} else {
+				expireResponse(buf[:n])
 			}
 		}
 	}

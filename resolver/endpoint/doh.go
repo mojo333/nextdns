@@ -87,9 +87,18 @@ func (e *DOHEndpoint) Exchange(ctx context.Context, payload, buf []byte) (n int,
 	if res.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("status: %d", res.StatusCode)
 	}
-	n, err = res.Body.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return n, fmt.Errorf("read: %v", err)
+	// A single Read may return only part of the body, so keep reading until
+	// EOF or until buf is full.
+	for n < len(buf) {
+		var nn int
+		nn, err = res.Body.Read(buf[n:])
+		n += nn
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return n, fmt.Errorf("read: %v", err)
+		}
 	}
 	return n, nil
 }

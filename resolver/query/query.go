@@ -147,9 +147,10 @@ func New(payload []byte, peerIP, localIP net.IP) (Query, error) {
 }
 
 func (qry *Query) parse() error {
-	// Only a forwarder on loopback, such as dnsmasq with --add-mac, may tell us
-	// the client's MAC. Taking it from anyone else would let a LAN client pick
-	// another device's per-MAC profile. Decide before ECS can rewrite PeerIP.
+	// Only a forwarder on loopback, such as dnsmasq with --add-mac and
+	// --add-subnet, may tell us the client's MAC or address. Taking them from
+	// anyone else would let a LAN client pick another device's profile. Decide
+	// before ECS can rewrite PeerIP.
 	fromLoopback := qry.PeerIP.IsLoopback()
 	p := &dnsmessage.Parser{}
 	h, err := p.Start(qry.Payload)
@@ -199,7 +200,7 @@ func (qry *Query) parse() error {
 					if len(o.Data) >= 8 {
 						switch o.Data[1] {
 						case 0x1: // IPv4
-							if o.Data[2] == 32 {
+							if fromLoopback && o.Data[2] == 32 {
 								// Only consider full IPs
 								qry.PeerIP = net.IP(o.Data[4:8])
 							}
@@ -208,7 +209,7 @@ func (qry *Query) parse() error {
 								nutterECSOption(qry.Payload, off, o)
 							}
 						case 0x2: // IPv6
-							if o.Data[2] == 128 && len(o.Data) >= 20 {
+							if fromLoopback && o.Data[2] == 128 && len(o.Data) >= 20 {
 								// Only consider full IPs
 								qry.PeerIP = net.IP(o.Data[4:20])
 							}

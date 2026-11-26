@@ -34,6 +34,12 @@ import (
 	"github.com/nextdns/nextdns/router"
 )
 
+// startupGrace is how long start waits for listening to fail before treating the
+// daemon as started.
+var startupGrace = 5 * time.Second
+
+var exitProcess = os.Exit
+
 type proxySvc struct {
 	proxy.Proxy
 	log      host.Logger
@@ -95,8 +101,17 @@ func isErrNetUnreachable(err error) bool {
 	return false
 }
 
-func (p *proxySvc) start() (err error) {
+func (p *proxySvc) start() error {
+	return p.startServing(p.ListenAndServe)
+}
+
+// startServing runs serve in the background. An error during the startup grace
+// period is returned. If serve ends later without being asked to stop, the
+// process exits so the supervisor restarts it, because it would otherwise stay
+// alive while answering nothing.
+func (p *proxySvc) startServing(serve func(context.Context) error) error {
 	errC := make(chan error)
+	started := make(chan struct{})
 	go func() {
 		ctx, stopFunc := context.WithCancel(context.Background())
 		p.stopMu.Lock()
@@ -108,17 +123,23 @@ func (p *proxySvc) start() (err error) {
 		for _, f := range p.OnInit {
 			go f(ctx)
 		}
-		if listenErr := p.ListenAndServe(ctx); listenErr != nil && !errors.Is(listenErr, context.Canceled) {
-			select {
-			case errC <- listenErr:
-			default:
-			}
+		err := serve(ctx)
+		if ctx.Err() != nil {
+			// Stop was requested.
+			return
+		}
+		select {
+		case errC <- err:
+		case <-started:
+			p.log.Errorf("Stopped listening unexpectedly, exiting: %v", err)
+			exitProcess(1)
 		}
 	}()
 	select {
 	case err := <-errC:
 		return err
-	case <-time.After(5 * time.Second):
+	case <-time.After(startupGrace):
+		close(started)
 	}
 	return nil
 }

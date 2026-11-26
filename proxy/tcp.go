@@ -9,6 +9,7 @@ import (
 	"net"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nextdns/nextdns/resolver"
@@ -37,6 +38,16 @@ const maxTCPPipelinedQueries = 32
 // TCP clients can pin. Connections beyond it are closed at once.
 var maxTCPConnections = 256
 
+// acceptRetryDelay is the pause after an accept fails for lack of resources.
+var acceptRetryDelay = 100 * time.Millisecond
+
+// isResourceShortage reports whether an accept error is likely to clear once
+// other connections close or memory is freed.
+func isResourceShortage(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
+}
+
 func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := &sync.Pool{
 		New: func() any {
@@ -50,6 +61,14 @@ func (p Proxy) serveTCP(ctx context.Context, l net.Listener, inflightRequests ch
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
+			}
+			if isResourceShortage(err) {
+				p.logErr(fmt.Errorf("TCP accept: %w", err))
+				select {
+				case <-time.After(acceptRetryDelay):
+					continue
+				case <-ctx.Done():
+				}
 			}
 			return err
 		}

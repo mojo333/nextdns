@@ -240,24 +240,56 @@ install_bin() {
     log_debug "Installing $INSTALL_RELEASE binary for $GOOS/$GOARCH to $bin_path"
     case "$INSTALL_RELEASE" in
     */*)
-        # Snapshot - use custom repo if available
-        branch=${INSTALL_RELEASE%/*}
-        hash=${INSTALL_RELEASE#*/}
-        if [ "$CUSTOM_GITHUB_REPO" ]; then
-            url="https://github.com/${GITHUB_REPO}/releases/download/snapshot-${branch}-${hash}/nextdns_${GOOS}_${GOARCH}.tar.gz"
-        else
-            url="https://snapshot.nextdns.io/${branch}/nextdns-${hash}_${GOOS}_${GOARCH}.tar.gz"
-        fi
-        ;;
-    *)
-        # CUSTOM: Use your GitHub repo for releases
-        url="https://github.com/${GITHUB_REPO}/releases/download/v${INSTALL_RELEASE}/nextdns_${INSTALL_RELEASE}_${GOOS}_${GOARCH}.tar.gz"
+        log_error "Snapshot builds have no checksums and cannot be installed"
+        return 1
         ;;
     esac
-    log_debug "Downloading $url"
-    asroot mkdir -p "$(dirname "$bin_path")" &&
-        curl -sL "$url" | asroot sh -c "tar Ozxf - nextdns > \"$bin_path\"" &&
-        asroot chmod 755 "$bin_path"
+    asset="nextdns_${INSTALL_RELEASE}_${GOOS}_${GOARCH}.tar.gz"
+    download_dir=$(mktemp -d) || return 1
+    status=1
+    # CUSTOM: Use your GitHub repo for releases
+    download_release "https://github.com/${GITHUB_REPO}/releases/download/v${INSTALL_RELEASE}" "$asset" "$download_dir" &&
+        asroot mkdir -p "$(dirname "$bin_path")" &&
+        asroot sh -c "tar Ozxf - nextdns > \"$bin_path\"" < "$download_dir/$asset" &&
+        asroot chmod 755 "$bin_path" &&
+        status=0
+    rm -rf "$download_dir"
+    return $status
+}
+
+# download_release fetches asset $2 from the release at $1 into directory $3 and
+# checks it against the release's checksums, so a damaged or swapped download is
+# never installed. It does not protect against a compromised release.
+download_release() {
+    log_debug "Downloading $1/$2"
+    if ! curl -fsSL "$1/$2" -o "$3/$2"; then
+        log_error "Cannot download $1/$2"
+        return 1
+    fi
+    # This fork publishes SHA256SUMS and upstream publishes checksums.txt.
+    if ! curl -fsSL "$1/SHA256SUMS" -o "$3/sums" 2>/dev/null && ! curl -fsSL "$1/checksums.txt" -o "$3/sums"; then
+        log_error "Cannot download the checksums for $1/$2"
+        return 1
+    fi
+    want=$(awk -v name="$2" '$2 == name { print $1 }' "$3/sums")
+    got=$(sha256_of "$3/$2")
+    if [ -z "$want" ] || [ "$want" != "$got" ]; then
+        log_error "Checksum of $2 does not match the release"
+        return 1
+    fi
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1 || which sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{ print $1 }'
+    elif command -v shasum >/dev/null 2>&1 || which shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{ print $1 }'
+    elif command -v openssl >/dev/null 2>&1 || which openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | awk '{ print $NF }'
+    else
+        log_error "No tool to verify SHA-256 checksums"
+        return 1
+    fi
 }
 
 upgrade_bin() {
@@ -557,18 +589,12 @@ uninstall_ubios() {
 }
 
 install_ubios_snapshot() {
-    branch=${INSTALL_RELEASE%/*}
-    hash=${INSTALL_RELEASE#*/}
-    if [ "$CUSTOM_GITHUB_REPO" ]; then
-        url="https://github.com/${GITHUB_REPO}/releases/download/snapshot-${branch}-${hash}/nextdns_${GOOS}_${GOARCH}.tar.gz"
-    else
-        url="https://snapshot.nextdns.io/${branch}/nextdns-${hash}_${GOOS}_${GOARCH}.tar.gz"
-    fi
-    podman exec unifi-os sh -c "curl -o- $url | tar Ozxf - nextdns > /usr/bin/nextdns; /usr/bin/nextdns install"
+    log_error "Snapshot builds have no checksums and cannot be installed"
+    return 1
 }
 
+# Refuses before uninstalling anything.
 upgrade_ubios_snapshot() {
-    /data/nextdns uninstall
     install_ubios_snapshot
 }
 

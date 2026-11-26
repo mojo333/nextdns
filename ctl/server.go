@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -79,6 +80,9 @@ func (s *Server) run(l net.Listener) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			s.logErr(err)
 			continue
 		}
@@ -117,13 +121,11 @@ func (s *Server) handleEvents(c net.Conn) {
 
 func (s *Server) handle(c net.Conn, e Event) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	cmd, found := s.cmds[e.Name]
+	cmd := s.cmds[e.Name]
+	s.mu.Unlock()
 	var data any
-	if found {
-		s.mu.Unlock()
+	if cmd != nil {
 		data = cmd(e.Data)
-		s.mu.Lock()
 	}
 	re := Event{
 		Name:  e.Name,

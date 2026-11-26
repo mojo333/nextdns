@@ -48,6 +48,11 @@ func (k cacheKey) ValidateQuestion(msg []byte) bool {
 	return q.Name.String() == k.qname
 }
 
+// maxFallbackAge is how long an answer may be served after the upstream fails.
+// Older addresses may have moved to somebody else. RFC 8767 suggests one to
+// three days.
+const maxFallbackAge = 24 * time.Hour
+
 type cacheValue struct {
 	time  time.Time
 	msg   []byte

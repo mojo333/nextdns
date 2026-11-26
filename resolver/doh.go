@@ -86,9 +86,9 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 				n, i = 0, ResolveInfo{Profile: i.Profile}
 			} else if minTTL > 0 {
 				return n, i, nil
+			} else if now.Sub(v.time) > maxFallbackAge {
+				n, i = 0, ResolveInfo{Profile: i.Profile}
 			}
-			// shortcut: no limit on the age of a fallback answer, add one if
-			// stale addresses cause trouble during long outages.
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(q.Payload))

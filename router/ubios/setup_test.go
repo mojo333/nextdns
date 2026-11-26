@@ -9,22 +9,31 @@ import (
 	"github.com/nextdns/nextdns/router/internal"
 )
 
-func TestDnsmasqCanStripClientOptions(t *testing.T) {
+// fakeDnsmasq writes a stand-in that accepts only the arguments in script.
+func fakeDnsmasq(t *testing.T, script string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dnsmasq")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// UniFi OS builds dnsmasq with the version "UNKNOWN", so support is detected by
+// asking dnsmasq to check the options rather than by reading its version.
+func TestCanStripClientOptions(t *testing.T) {
 	tests := []struct {
-		output string
-		want   bool
+		name string
+		path string
+		want bool
 	}{
-		{"Dnsmasq version 2.90  Copyright (c) 2000-2024 Simon Kelley\n", true},
-		{"Dnsmasq version 2.87  Copyright (c) 2000-2022 Simon Kelley\n", true},
-		{"Dnsmasq version 3.0  Copyright\n", true},
-		{"Dnsmasq version 2.86  Copyright (c) 2000-2021 Simon Kelley\n", false},
-		{"Dnsmasq version 2.9  Copyright\n", false},
-		{"Dnsmasq version UNKNOWN  Copyright\n", false},
-		{"", false},
+		{"accepts the options", fakeDnsmasq(t, `[ "$*" = "--test --conf-file=/dev/null --strip-mac --strip-subnet" ]`), true},
+		{"rejects an unknown option", fakeDnsmasq(t, `echo "bad command line options" >&2; exit 1`), false},
+		{"is not installed", filepath.Join(t.TempDir(), "missing"), false},
 	}
 	for _, tt := range tests {
-		if got := canStripClientOptions(tt.output); got != tt.want {
-			t.Errorf("canStripClientOptions(%q) = %v, want %v", tt.output, got, tt.want)
+		if got := canStripClientOptions(tt.path); got != tt.want {
+			t.Errorf("dnsmasq %s: canStripClientOptions = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }

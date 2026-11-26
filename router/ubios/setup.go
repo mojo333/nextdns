@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 
 	"github.com/nextdns/nextdns/config"
 	"github.com/nextdns/nextdns/router/internal"
@@ -95,28 +93,18 @@ func (r *Router) Restore() error {
 }
 
 func (r *Router) setupDNSMasq() error {
-	// A failure leaves the output empty, which counts as unsupported.
-	version, _ := exec.Command("dnsmasq", "--version").Output()
-	r.StripClientOptions = canStripClientOptions(string(version))
+	r.StripClientOptions = canStripClientOptions("dnsmasq")
 	if err := internal.WriteTemplate(r.DNSMasqConfPath, tmpl, r, 0644); err != nil {
 		return err
 	}
 	return killDNSMasq(r.DNSMasqPidPath)
 }
 
-var dnsmasqVersion = regexp.MustCompile(`Dnsmasq version (\d+)\.(\d+)`)
-
-// canStripClientOptions reports whether the output of dnsmasq --version names
-// 2.87 or later, the first release with strip-mac and strip-subnet. An unknown
-// option stops dnsmasq starting, so anything unrecognised counts as too old.
-func canStripClientOptions(versionOutput string) bool {
-	m := dnsmasqVersion.FindStringSubmatch(versionOutput)
-	if m == nil {
-		return false
-	}
-	major, _ := strconv.Atoi(m[1])
-	minor, _ := strconv.Atoi(m[2])
-	return major > 2 || (major == 2 && minor >= 87)
+// canStripClientOptions reports whether dnsmasq accepts strip-mac and
+// strip-subnet, which arrived in 2.87. An unknown option stops dnsmasq starting,
+// so it is asked to check them first, and any failure counts as unsupported.
+func canStripClientOptions(dnsmasq string) bool {
+	return exec.Command(dnsmasq, "--test", "--conf-file=/dev/null", "--strip-mac", "--strip-subnet").Run() == nil
 }
 
 func dnsFilterEnabled() bool {
@@ -143,7 +131,7 @@ server=127.0.0.1#{{.ListenPort}}
 strip-mac
 strip-subnet
 {{- else}}
-# strip-mac and strip-subnet need dnsmasq 2.87 or later, which was not detected.
+# This dnsmasq did not accept strip-mac and strip-subnet, which arrived in 2.87.
 # Without them a client can pose as another device.
 {{- end}}
 {{- if .ClientReporting}}

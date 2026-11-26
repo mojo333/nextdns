@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,6 +39,7 @@ type proxySvc struct {
 	log      host.Logger
 	resolver *resolver.DNS
 	stopFunc func()
+	stopMu   sync.Mutex
 	stopped  chan struct{}
 
 	// OnInit is called every time the proxy is started or restarted. The ctx is
@@ -64,7 +65,7 @@ func (p *proxySvc) StartContext(ctx context.Context) (err error) {
 			if isErrNetUnreachable(err) {
 				p.log.Infof("Network not yet ready, waiting")
 				time.Sleep(backoff)
-				backoff <<= 1
+				backoff = nextStartBackoff(backoff)
 				continue
 			}
 			return err
@@ -75,6 +76,11 @@ func (p *proxySvc) StartContext(ctx context.Context) (err error) {
 		f(ctx)
 	}
 	return nil
+}
+
+// nextStartBackoff doubles the delay between startup attempts, up to 30s.
+func nextStartBackoff(d time.Duration) time.Duration {
+	return min(2*d, 30*time.Second)
 }
 
 func isErrNetUnreachable(err error) bool {
@@ -91,18 +97,20 @@ func isErrNetUnreachable(err error) bool {
 
 func (p *proxySvc) start() (err error) {
 	errC := make(chan error)
-	var ctx context.Context
 	go func() {
-		ctx, p.stopFunc = context.WithCancel(context.Background())
-		defer p.stopFunc()
+		ctx, stopFunc := context.WithCancel(context.Background())
+		p.stopMu.Lock()
+		p.stopFunc = stopFunc
+		p.stopMu.Unlock()
+		defer stopFunc()
 		p.stopped = make(chan struct{})
 		defer close(p.stopped)
 		for _, f := range p.OnInit {
 			go f(ctx)
 		}
-		if err = p.ListenAndServe(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if listenErr := p.ListenAndServe(ctx); listenErr != nil && !errors.Is(listenErr, context.Canceled) {
 			select {
-			case errC <- err:
+			case errC <- listenErr:
 			default:
 			}
 		}
@@ -133,11 +141,15 @@ func (p *proxySvc) Stop() error {
 }
 
 func (p *proxySvc) stop() bool {
-	if p.stopFunc == nil {
+	p.stopMu.Lock()
+	stopFunc := p.stopFunc
+	if stopFunc == nil {
+		p.stopMu.Unlock()
 		return false
 	}
-	p.stopFunc()
 	p.stopFunc = nil
+	p.stopMu.Unlock()
+	stopFunc()
 	<-p.stopped
 	return true
 }
@@ -278,8 +290,7 @@ func run(args []string) error {
 		})
 	}
 
-	var startupUnix atomic.Int64
-	startupUnix.Store(time.Now().UnixNano())
+	fallback := newFallbackWindow(10 * time.Minute)
 	p.resolver = &resolver.DNS{
 		MaxInflightRequests: c.MaxInflightUpstreamRequests,
 		DOH: resolver.DOH{
@@ -296,8 +307,7 @@ func run(args []string) error {
 			}
 			// Allow fallback to plain DNS for 10 minute after startup or after
 			// a change of network configuration.
-			startup := time.Unix(0, startupUnix.Load())
-			return time.Since(startup) < 10*time.Minute
+			return fallback.open()
 		}),
 	}
 
@@ -519,7 +529,7 @@ func run(args []string) error {
 					return
 				case c := <-netChange:
 					log.Infof("Network change detected: %s", c)
-					startupUnix.Store(time.Now().UnixNano()) // reset the startup marker so DNS fallback can happen again.
+					fallback.reset() // reopen the window so DNS fallback can happen again.
 					if err := p.resolver.Manager.Test(ctx); err != nil && !errors.Is(err, context.Canceled) {
 						log.Errorf("Test after network change failed: %v", err)
 					}

@@ -80,9 +80,15 @@ func (r *DOH) resolve(ctx context.Context, q query.Query, buf []byte, rt http.Ro
 			i.FromCache = true
 			// Use cached entry if TTL is in the future and isn't older than
 			// the configuration last change.
-			if minTTL > 0 && r.lastMod(url).Before(v.time) {
+			if !r.lastMod(url).Before(v.time) {
+				// Never fall back to it either, as it could undo a block
+				// added since it was cached.
+				n, i = 0, ResolveInfo{Profile: i.Profile}
+			} else if minTTL > 0 {
 				return n, i, nil
 			}
+			// shortcut: no limit on the age of a fallback answer, add one if
+			// stale addresses cause trouble during long outages.
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(q.Payload))

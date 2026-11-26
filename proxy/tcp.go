@@ -239,7 +239,8 @@ func (p Proxy) serveTCPConn(ctx context.Context, c net.Conn, inflightRequests ch
 			// requests; the timeout bounds them even when Timeout is 0.
 			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
 			defer cancel()
-			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
+			// A failure that still left a cached answer is served from the cache.
+			if rsize, ri, err = p.Resolve(ctx, q, rbuf); (err != nil && !ri.FromCache) || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
 			werr := reply()

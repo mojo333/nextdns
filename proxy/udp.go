@@ -38,7 +38,7 @@ var udpOOBSize = func() int {
 	return len(oob6)
 }()
 
-func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error {
+func (p Proxy) serveUDP(ctx context.Context, l net.PacketConn, inflightRequests chan struct{}, inflight *sync.WaitGroup) error {
 	bpool := sync.Pool{
 		New: func() any {
 			// Use the same buffer size as for TCP and truncate later. UDP and
@@ -79,7 +79,9 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 			p.rejectUDP(c, &bpool, bp, qsize, lip, raddr, localPort, start)
 			continue
 		}
+		inflight.Add(1)
 		go func(bp *tcpBuf, qsize int, lip net.IP, raddr *net.UDPAddr, start time.Time) {
+			defer inflight.Done()
 			var err error
 			var rsize int
 			var ri resolver.ResolveInfo
@@ -128,12 +130,10 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 				}
 				return
 			}
-			ctx := context.Background()
-			if p.Timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, p.Timeout)
-				defer cancel()
-			}
+			// Derive from the serve context so shutdown cancels in-flight
+			// requests; the timeout bounds them even when Timeout is 0.
+			ctx, cancel := context.WithTimeout(ctx, p.requestTimeout())
+			defer cancel()
 			if rsize, ri, err = p.Resolve(ctx, q, rbuf); err != nil || rsize <= 0 || rsize > maxTCPSize {
 				rsize = replyRCode(dnsmessage.RCodeServerFailure, q, rbuf)
 			}
@@ -156,36 +156,16 @@ func (p Proxy) serveUDP(l net.PacketConn, inflightRequests chan struct{}) error 
 	}
 }
 
+// rejectUDP answers a query that found no free in-flight slot.
 func (p Proxy) rejectUDP(c *net.UDPConn, bpool *sync.Pool, bp *tcpBuf, qsize int, lip net.IP, raddr *net.UDPAddr, localPort int, start time.Time) {
 	buf := bp[:]
 	sourceIP := addrIP(raddr)
-	remotePort := addrPort(raddr)
-	q, parseErr := query.New(buf[:qsize], sourceIP, lip)
-	err := errTooManyInflightRequests
-	rcode := dnsmessage.RCodeServerFailure
-	if parseErr != nil {
-		err = parseErr
-		rcode = dnsmessage.RCodeFormatError
+	q, rsize, err := rejectionReply(buf, qsize, sourceIP, lip)
+	if _, _, werr := c.WriteMsgUDP(buf[:rsize], oobWithSrc(lip), raddr); werr != nil {
+		err = fmt.Errorf("%v (write: %w)", err, werr)
 	}
-	rsize := replyRCode(rcode, q, buf)
-	_, _, writeErr := c.WriteMsgUDP(buf[:rsize], oobWithSrc(lip), raddr)
-	if writeErr != nil {
-		err = fmt.Errorf("%v (write: %w)", err, writeErr)
-	}
+	p.logRejection("UDP", q, sourceIP, localPort, addrPort(raddr), qsize, rsize, start, err)
 	bpool.Put(bp)
-	p.logQuery(QueryInfo{
-		SourceIP:     sourceIP,
-		RemotePort:   remotePort,
-		LocalPort:    localPort,
-		PeerIP:       q.PeerIP,
-		Protocol:     "UDP",
-		Type:         q.Type.String(),
-		Name:         q.Name,
-		QuerySize:    qsize,
-		ResponseSize: rsize,
-		Duration:     time.Since(start),
-		Error:        err,
-	})
 }
 
 // readUDP reads from c to buf and returns the local and remote addresses.

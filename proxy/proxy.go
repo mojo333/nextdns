@@ -60,9 +60,8 @@ type Proxy struct {
 	// being cancelled.
 	Timeout time.Duration
 
-	// Maximum number of inflight requests. Further UDP requests receive
-	// SERVFAIL and further TCP connections are closed without blocking a
-	// listener loop.
+	// Maximum number of inflight requests. Further requests receive SERVFAIL
+	// without blocking a listener loop.
 	MaxInflightRequests uint
 
 	// QueryLog specifies an optional log function called for each received query.
@@ -115,6 +114,19 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 	errs := make(chan error, expReturns)
 	var closeAll []func() error
 	var closeAllMu sync.Mutex
+	closing := false
+	// registerCloser records a listener to close on shutdown, or closes it
+	// right away if shutdown already started while the listener was binding.
+	registerCloser := func(close func() error) {
+		closeAllMu.Lock()
+		defer closeAllMu.Unlock()
+		if closing {
+			_ = close()
+			return
+		}
+		closeAll = append(closeAll, close)
+	}
+	var inflight sync.WaitGroup
 	inflightRequests := make(chan struct{}, p.maxInflightRequests())
 
 	for _, addr := range addrs {
@@ -123,10 +135,8 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 			p.logInfof("Listening on UDP/%s", addr)
 			udp, err := lc.ListenPacket(ctx, "udp", addr)
 			if err == nil {
-				closeAllMu.Lock()
-				closeAll = append(closeAll, udp.Close)
-				closeAllMu.Unlock()
-				err = p.serveUDP(udp, inflightRequests)
+				registerCloser(udp.Close)
+				err = p.serveUDP(ctx, udp, inflightRequests, &inflight)
 			}
 			cancel()
 			if err != nil {
@@ -140,10 +150,8 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 			p.logInfof("Listening on TCP/%s", addr)
 			tcp, err := lc.Listen(ctx, "tcp", addr)
 			if err == nil {
-				closeAllMu.Lock()
-				closeAll = append(closeAll, tcp.Close)
-				closeAllMu.Unlock()
-				err = p.serveTCP(tcp, inflightRequests)
+				registerCloser(tcp.Close)
+				err = p.serveTCP(ctx, tcp, inflightRequests, &inflight)
 			}
 			cancel()
 			if err != nil {
@@ -155,9 +163,12 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 
 	<-ctx.Done()
 	errs <- ctx.Err()
+	closeAllMu.Lock()
+	closing = true
 	for _, close := range closeAll {
 		_ = close()
 	}
+	closeAllMu.Unlock()
 	// Wait for the two sockets (+ ctx err) to be terminated and return the
 	// initial error.
 	var err error
@@ -165,6 +176,18 @@ func (p Proxy) ListenAndServe(ctx context.Context) error {
 		if e := <-errs; (err == nil || errors.Is(err, context.Canceled)) && e != nil {
 			err = e
 		}
+	}
+	// Wait for in-flight request handlers (bounded by their request timeout)
+	// so callers can safely tear down the upstream resolver once we return.
+	handlersDone := make(chan struct{})
+	go func() {
+		inflight.Wait()
+		close(handlersDone)
+	}()
+	select {
+	case <-handlersDone:
+	case <-time.After(shutdownGraceTimeout):
+		p.logErr(errors.New("shutdown: in-flight requests did not complete within grace period"))
 	}
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)
@@ -206,6 +229,24 @@ func (p Proxy) maxInflightRequests() int {
 	return int(p.MaxInflightRequests)
 }
 
+// defaultRequestTimeout bounds request handling when Timeout is left unset
+// (or set to 0) so a hung upstream can never pin an inflight slot forever.
+const defaultRequestTimeout = 5 * time.Second
+
+// shutdownGraceTimeout bounds how long ListenAndServe waits for in-flight
+// request handlers after its context is cancelled.
+const shutdownGraceTimeout = 5 * time.Second
+
+func (p Proxy) requestTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+	return defaultRequestTimeout
+}
+
+// tryAcquireRequest takes an in-flight slot without waiting. Waiting would stop
+// the read loops, so one slow upstream holding every slot would stall all
+// queries, including those the cache could answer at once.
 func tryAcquireRequest(inflightRequests chan struct{}) bool {
 	select {
 	case inflightRequests <- struct{}{}:
@@ -231,4 +272,31 @@ func (p Proxy) logErr(err error) {
 	if err != nil && p.ErrorLog != nil {
 		p.ErrorLog(err)
 	}
+}
+
+// rejectionReply writes into buf the reply for a query that found no free
+// in-flight slot: SERVFAIL, or FORMERR when the query cannot be parsed. It
+// answers at once so the client can retry instead of waiting for its timeout.
+func rejectionReply(buf []byte, qsize int, peerIP, localIP net.IP) (query.Query, int, error) {
+	q, parseErr := query.New(buf[:qsize], peerIP, localIP)
+	if parseErr != nil {
+		return q, replyRCode(dnsmessage.RCodeFormatError, q, buf), parseErr
+	}
+	return q, replyRCode(dnsmessage.RCodeServerFailure, q, buf), errTooManyInflightRequests
+}
+
+func (p Proxy) logRejection(protocol string, q query.Query, sourceIP net.IP, localPort, remotePort, qsize, rsize int, start time.Time, err error) {
+	p.logQuery(QueryInfo{
+		SourceIP:     sourceIP,
+		RemotePort:   remotePort,
+		LocalPort:    localPort,
+		PeerIP:       q.PeerIP,
+		Protocol:     protocol,
+		Type:         q.Type.String(),
+		Name:         q.Name,
+		QuerySize:    qsize,
+		ResponseSize: rsize,
+		Duration:     time.Since(start),
+		Error:        err,
+	})
 }

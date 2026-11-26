@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestServeUDP_FullLimitReturnsServerFailure(t *testing.T) {
 	inflightRequests <- struct{}{}
 	errC := make(chan error, 1)
 	go func() {
-		errC <- (Proxy{}).serveUDP(server, inflightRequests)
+		errC <- (Proxy{}).serveUDP(context.Background(), server, inflightRequests, &sync.WaitGroup{})
 	}()
 
 	query := []byte{
@@ -99,7 +100,7 @@ func TestServeUDP_TruncatedResponseIsWellFormed(t *testing.T) {
 	defer client.Close()
 
 	go func() {
-		_ = (Proxy{Upstream: largeAnswerResolver{}}).serveUDP(server, make(chan struct{}, 10))
+		_ = (Proxy{Upstream: largeAnswerResolver{}}).serveUDP(context.Background(), server, make(chan struct{}, 10), &sync.WaitGroup{})
 	}()
 
 	for _, bufSize := range []uint16{0, 1, 512, 1232} {

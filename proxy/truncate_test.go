@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -426,8 +427,8 @@ func TestServeUDP_TruncationTCPRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tcp.Close()
-	go func() { _ = p.serveUDP(udp, make(chan struct{}, 10)) }()
-	go func() { _ = p.serveTCP(tcp, make(chan struct{}, 10)) }()
+	go func() { _ = p.serveUDP(context.Background(), udp, make(chan struct{}, 10), &sync.WaitGroup{}) }()
+	go func() { _ = p.serveTCP(context.Background(), tcp, make(chan struct{}, 10), &sync.WaitGroup{}) }()
 	for _, size := range []int{512, 1232, 8192} {
 		q := truncationQuery(t, size)
 		c, err := net.Dial("udp", udp.LocalAddr().String())

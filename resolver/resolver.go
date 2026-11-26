@@ -127,6 +127,11 @@ func (r *DNS) upstreamLimiter() *requestLimiter {
 	return r.limiter
 }
 
+// Resolve increments the counters atomically from many goroutines, so they are
+// read atomically too.
 func (r *DNS) CacheStats() CacheStats {
-	return r.cacheStats
+	return CacheStats{
+		Hit:  atomic.LoadUint32(&r.cacheStats.Hit),
+		Miss: atomic.LoadUint32(&r.cacheStats.Miss),
+	}
 }
